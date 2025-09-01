@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { supabase } from '../services/supabaseService';
+import { supabase } from '../lib/supabase';
 import { Package, AddOn, Project, PhysicalItem, Profile } from '../types';
 import PageHeader from './PageHeader';
 import Modal from './Modal';
