@@ -210,31 +210,142 @@ const App: React.FC = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [route, setRoute] = useState(window.location.hash || '#/home');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+
+  const fetchInitialData = async () => {
+    setIsLoading(true);
+    try {
+      console.log("Fetching initial data from Supabase...");
+      // We need to get the user's profile first to get the vendor_id
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        console.log("No user session found. Skipping data fetch.");
+        setIsLoading(false);
+        return;
+      }
+
+      // Fetch profile first
+      const { data: profileData, error: profileError } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', user.id)
+        .single();
+
+      if (profileError) throw profileError;
+      if (profileData) setProfile(profileData);
+
+      // Now fetch all other data associated with the vendor
+      const vendorId = profileData.vendor_id || user.id; // Fallback to user.id if vendor_id is not on profile
+
+      const services = [
+        clientsService, projectsService, teamMembersService, transactionsService,
+        teamProjectPaymentsService, teamPaymentRecordsService, financialPocketsService,
+        leadsService, rewardLedgerEntriesService, cardsService, assetsService,
+        contractsService, clientFeedbackService, socialMediaPostsService,
+        notificationsService, promoCodesService, sopsService, packagesService, addOnsService
+      ];
+
+      const dataPromises = services.map(service => service.getAll(vendorId));
+      const results = await Promise.all(dataPromises);
+
+      const [
+        clientsData, projectsData, teamMembersData, transactionsData,
+        teamProjectPaymentsData, teamPaymentRecordsData, pocketsData,
+        leadsData, rewardLedgerEntriesData, cardsData, assetsData,
+        contractsData, clientFeedbackData, socialMediaPostsData,
+        notificationsData, promoCodesData, sopsData, packagesData, addOnsData
+      ] = results;
+
+      if (clientsData.error) throw clientsData.error;
+      setClients(clientsData.data || []);
+
+      if (projectsData.error) throw projectsData.error;
+      setProjects(projectsData.data || []);
+
+      if (teamMembersData.error) throw teamMembersData.error;
+      setTeamMembers(teamMembersData.data || []);
+
+      if (transactionsData.error) throw transactionsData.error;
+      setTransactions(transactionsData.data || []);
+
+      if (teamProjectPaymentsData.error) throw teamProjectPaymentsData.error;
+      setTeamProjectPayments(teamProjectPaymentsData.data || []);
+
+      if (teamPaymentRecordsData.error) throw teamPaymentRecordsData.error;
+      setTeamPaymentRecords(teamPaymentRecordsData.data || []);
+
+      if (pocketsData.error) throw pocketsData.error;
+      setPockets(pocketsData.data || []);
+
+      if (leadsData.error) throw leadsData.error;
+      setLeads(leadsData.data || []);
+
+      if (rewardLedgerEntriesData.error) throw rewardLedgerEntriesData.error;
+      setRewardLedgerEntries(rewardLedgerEntriesData.data || []);
+
+      if (cardsData.error) throw cardsData.error;
+      setCards(cardsData.data || []);
+
+      if (assetsData.error) throw assetsData.error;
+      setAssets(assetsData.data || []);
+
+      if (contractsData.error) throw contractsData.error;
+      setContracts(contractsData.data || []);
+
+      if (clientFeedbackData.error) throw clientFeedbackData.error;
+      setClientFeedback(clientFeedbackData.data || []);
+
+      if (socialMediaPostsData.error) throw socialMediaPostsData.error;
+      setSocialMediaPosts(socialMediaPostsData.data || []);
+
+      if (notificationsData.error) throw notificationsData.error;
+      setNotifications(notificationsData.data || []);
+
+      if (promoCodesData.error) throw promoCodesData.error;
+      setPromoCodes(promoCodesData.data || []);
+
+      if (sopsData.error) throw sopsData.error;
+      setSops(sopsData.data || []);
+
+      if (packagesData.error) throw packagesData.error;
+      setPackages(packagesData.data || []);
+
+      if (addOnsData.error) throw addOnsData.error;
+      setAddOns(addOnsData.data || []);
+
+      console.log("Initial data fetched successfully.");
+
+    } catch (error) {
+      console.error("Error fetching initial data:", error);
+      showNotification("Gagal memuat data dari database. Silakan coba muat ulang halaman.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   // --- State Initialization with Persistence ---
-  const [users, setUsers] = useState<User[]>(() => JSON.parse(JSON.stringify(MOCK_USERS)));
+  const [users, setUsers] = useState<User[]>([]);
   
-  const [clients, setClients] = usePersistentState<Client[]>('vena-clients', JSON.parse(JSON.stringify(MOCK_DATA.clients)));
-  const [projects, setProjects] = usePersistentState<Project[]>('vena-projects', JSON.parse(JSON.stringify(MOCK_DATA.projects)));
-  const [teamMembers, setTeamMembers] = usePersistentState<TeamMember[]>('vena-teamMembers', JSON.parse(JSON.stringify(MOCK_DATA.teamMembers)));
-  const [transactions, setTransactions] = usePersistentState<Transaction[]>('vena-transactions', JSON.parse(JSON.stringify(MOCK_DATA.transactions)));
-  const [teamProjectPayments, setTeamProjectPayments] = usePersistentState<TeamProjectPayment[]>('vena-teamProjectPayments', JSON.parse(JSON.stringify(MOCK_DATA.teamProjectPayments)));
-  const [teamPaymentRecords, setTeamPaymentRecords] = usePersistentState<TeamPaymentRecord[]>('vena-teamPaymentRecords', JSON.parse(JSON.stringify(MOCK_DATA.teamPaymentRecords)));
-  const [pockets, setPockets] = usePersistentState<FinancialPocket[]>('vena-pockets', JSON.parse(JSON.stringify(MOCK_DATA.pockets)));
-  const [profile, setProfile] = usePersistentState<Profile>('vena-profile', JSON.parse(JSON.stringify(MOCK_DATA.profile)));
-  const [leads, setLeads] = usePersistentState<Lead[]>('vena-leads', JSON.parse(JSON.stringify(MOCK_DATA.leads)));
-  const [rewardLedgerEntries, setRewardLedgerEntries] = usePersistentState<RewardLedgerEntry[]>('vena-rewardLedgerEntries', JSON.parse(JSON.stringify(MOCK_DATA.rewardLedgerEntries)));
-  const [cards, setCards] = usePersistentState<Card[]>('vena-cards', JSON.parse(JSON.stringify(MOCK_DATA.cards)));
-  // teamPaymentRecords handled locally only (no matching service)
-  const [assets, setAssets] = usePersistentState<Asset[]>('vena-assets', JSON.parse(JSON.stringify(MOCK_DATA.assets)));
-  const [contracts, setContracts] = usePersistentState<Contract[]>('vena-contracts', JSON.parse(JSON.stringify(MOCK_DATA.contracts)));
-  const [clientFeedback, setClientFeedback] = usePersistentState<ClientFeedback[]>('vena-clientFeedback', JSON.parse(JSON.stringify(MOCK_DATA.clientFeedback)));
-  const [socialMediaPosts, setSocialMediaPosts] = usePersistentState<SocialMediaPost[]>('vena-socialMediaPosts', JSON.parse(JSON.stringify(MOCK_DATA.socialMediaPosts)));
-  const [notifications, setNotifications] = usePersistentState<Notification[]>('vena-notifications', JSON.parse(JSON.stringify(MOCK_DATA.notifications)));
-  const [promoCodes, setPromoCodes] = usePersistentState<PromoCode[]>('vena-promoCodes', JSON.parse(JSON.stringify(MOCK_DATA.promoCodes)));
-  const [sops, setSops] = usePersistentState<SOP[]>('vena-sops', JSON.parse(JSON.stringify(MOCK_DATA.sops)));
-  const [packages, setPackages] = usePersistentState<Package[]>('vena-packages', JSON.parse(JSON.stringify(MOCK_DATA.packages)));
-  const [addOns, setAddOns] = usePersistentState<AddOn[]>('vena-addOns', JSON.parse(JSON.stringify(MOCK_DATA.addOns)));
+  const [clients, setClients] = usePersistentState<Client[]>('vena-clients', []);
+  const [projects, setProjects] = usePersistentState<Project[]>('vena-projects', []);
+  const [teamMembers, setTeamMembers] = usePersistentState<TeamMember[]>('vena-teamMembers', []);
+  const [transactions, setTransactions] = usePersistentState<Transaction[]>('vena-transactions', []);
+  const [teamProjectPayments, setTeamProjectPayments] = usePersistentState<TeamProjectPayment[]>('vena-teamProjectPayments', []);
+  const [teamPaymentRecords, setTeamPaymentRecords] = usePersistentState<TeamPaymentRecord[]>('vena-teamPaymentRecords', []);
+  const [pockets, setPockets] = usePersistentState<FinancialPocket[]>('vena-pockets', []);
+  const [profile, setProfile] = usePersistentState<Profile>('vena-profile', DEFAULT_USER_PROFILE);
+  const [leads, setLeads] = usePersistentState<Lead[]>('vena-leads', []);
+  const [rewardLedgerEntries, setRewardLedgerEntries] = usePersistentState<RewardLedgerEntry[]>('vena-rewardLedgerEntries', []);
+  const [cards, setCards] = usePersistentState<Card[]>('vena-cards', []);
+  const [assets, setAssets] = usePersistentState<Asset[]>('vena-assets', []);
+  const [contracts, setContracts] = usePersistentState<Contract[]>('vena-contracts', []);
+  const [clientFeedback, setClientFeedback] = usePersistentState<ClientFeedback[]>('vena-clientFeedback', []);
+  const [socialMediaPosts, setSocialMediaPosts] = usePersistentState<SocialMediaPost[]>('vena-socialMediaPosts', []);
+  const [notifications, setNotifications] = usePersistentState<Notification[]>('vena-notifications', []);
+  const [promoCodes, setPromoCodes] = usePersistentState<PromoCode[]>('vena-promoCodes', []);
+  const [sops, setSops] = usePersistentState<SOP[]>('vena-sops', []);
+  const [packages, setPackages] = usePersistentState<Package[]>('vena-packages', []);
+  const [addOns, setAddOns] = usePersistentState<AddOn[]>('vena-addOns', []);
 
   // ---------- Sync wrappers for Supabase-backed entities ----------
   // Refs to keep latest state for diffing in setters
@@ -413,6 +524,12 @@ const App: React.FC = () => {
             console.warn('[SIMULASI EMAIL] Gagal: Alamat email vendor tidak diatur di Pengaturan Profil.');
         }
     };
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      fetchInitialData();
+    }
+  }, [isAuthenticated]);
 
   useEffect(() => {
     const handleHashChange = () => {
@@ -707,6 +824,17 @@ const App: React.FC = () => {
   };
   
   // --- ROUTING LOGIC ---
+  if (isLoading && isAuthenticated) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-brand-bg text-brand-text-primary">
+        <div className="text-center space-y-2">
+          <p className="text-lg font-semibold animate-pulse">Memuat data Anda...</p>
+          <p className="text-sm text-brand-text-secondary">Harap tunggu sebentar.</p>
+        </div>
+      </div>
+    );
+  }
+
   if (route.startsWith('#/home') || route === '#/') return <Homepage />;
   if (route.startsWith('#/login')) return <Login onLoginSuccess={handleLoginSuccess} users={users} />;
   
