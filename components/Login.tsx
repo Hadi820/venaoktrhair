@@ -26,33 +26,58 @@ const EyeOffIcon = (props: React.SVGProps<SVGSVGElement>) => (
 );
 
 
+import { supabase } from '../lib/supabase';
+
 interface LoginProps {
-    onLoginSuccess: (user: User) => void;
-    users: User[];
+    // onLoginSuccess is no longer needed, as the auth state change will be handled globally in App.tsx
 }
 
-const Login: React.FC<LoginProps> = ({ onLoginSuccess, users }) => {
+const Login: React.FC<LoginProps> = () => {
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [isPasswordVisible, setIsPasswordVisible] = useState(false);
     const [error, setError] = useState('');
     const [isLoading, setIsLoading] = useState(false);
 
-    const handleSubmit = (e: React.FormEvent) => {
+    const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         setError('');
         setIsLoading(true);
 
-        // Simulate API call
-        setTimeout(() => {
-            const user = users.find(u => u.email === email && u.password === password);
-            if (user) {
-                onLoginSuccess(user);
-            } else {
-                setError('Username atau kata sandi salah.');
+        try {
+            const { error } = await supabase.auth.signInWithPassword({
+                email: email,
+                password: password,
+            });
+
+            if (error) {
+                setError(error.message);
             }
+            // onLoginSuccess is not needed. The onAuthStateChange listener in App.tsx will handle the rest.
+        } catch (err) {
+            setError('An unexpected error occurred.');
+            console.error(err);
+        } finally {
             setIsLoading(false);
-        }, 1000);
+        }
+    };
+
+    const handleGoogleLogin = async () => {
+        setError('');
+        setIsLoading(true);
+        try {
+            const { error } = await supabase.auth.signInWithOAuth({
+                provider: 'google',
+            });
+            if (error) {
+                setError(error.message);
+            }
+        } catch (err) {
+            setError('An unexpected error occurred during Google login.');
+            console.error(err);
+        } finally {
+            // Don't set isLoading to false here, as the page will redirect.
+        }
     };
 
     return (
@@ -123,16 +148,16 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess, users }) => {
                         <hr className="flex-grow border-t border-slate-200"/>
                     </div>
                     
-                    <button className="w-full h-12 px-4 bg-white border border-slate-300 rounded-lg flex items-center justify-center gap-2 text-slate-700 font-semibold hover:bg-slate-50 transition-colors">
+                    <button
+                        type="button"
+                        onClick={handleGoogleLogin}
+                        className="w-full h-12 px-4 bg-white border border-slate-300 rounded-lg flex items-center justify-center gap-2 text-slate-700 font-semibold hover:bg-slate-50 transition-colors"
+                    >
                         <GoogleIcon className="w-5 h-5" />
                         Masuk dengan Google
                     </button>
 
-                     <div className="text-center mt-6 text-xs text-slate-400 bg-slate-50 p-3 rounded-lg">
-                        <p className="font-bold text-slate-500">Akun Demo:</p>
-                        <p><span className="font-semibold text-slate-600">admin@vena.pictures</span> (pw: admin)</p>
-                        <p><span className="font-semibold text-slate-600">member@vena.pictures</span> (pw: member)</p>
-                    </div>
+                     {/* Demo account info removed for security */}
                     <div className="text-center mt-4">
                         <a href="#/verify" className="text-sm text-slate-500 hover:text-blue-600 transition-colors">
                             Verifikasi Dokumen Digital
