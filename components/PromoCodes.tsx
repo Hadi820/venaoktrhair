@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { supabase } from '../services/supabaseService';
 import { PromoCode, Project } from '../types';
 import PageHeader from './PageHeader';
 import Modal from './Modal';
@@ -36,11 +37,11 @@ const PromoCodes: React.FC<PromoCodesProps> = ({ promoCodes, setPromoCodes, proj
             setSelectedCode(code);
             setFormData({
                 code: code.code,
-                discountType: code.discountType,
-                discountValue: code.discountValue.toString(),
-                isActive: code.isActive,
-                maxUsage: code.maxUsage?.toString() || '',
-                expiryDate: code.expiryDate || '',
+                discountType: code.discount_type,
+                discountValue: code.discount_value.toString(),
+                isActive: code.is_active,
+                maxUsage: code.max_usage?.toString() || '',
+                expiryDate: code.expiry_date || '',
             });
         } else {
             setSelectedCode(null);
@@ -64,48 +65,64 @@ const PromoCodes: React.FC<PromoCodesProps> = ({ promoCodes, setPromoCodes, proj
         }));
     };
 
-    const handleSubmit = (e: React.FormEvent) => {
+    const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
 
+        const promoCodeData = {
+            code: formData.code.toUpperCase(),
+            discount_type: formData.discountType,
+            discount_value: Number(formData.discountValue),
+            is_active: formData.isActive,
+            max_usage: formData.maxUsage ? Number(formData.maxUsage) : null,
+            expiry_date: formData.expiryDate || null,
+        };
+
+        let error;
+
         if (modalMode === 'add') {
-            const newCode: PromoCode = {
-                id: crypto.randomUUID(),
-                code: formData.code.toUpperCase(),
-                discountType: formData.discountType,
-                discountValue: Number(formData.discountValue),
-                isActive: formData.isActive,
-                usageCount: 0,
-                maxUsage: formData.maxUsage ? Number(formData.maxUsage) : null,
-                expiryDate: formData.expiryDate || null,
-                createdAt: new Date().toISOString(),
-            };
-            setPromoCodes(prev => [...prev, newCode]);
-            showNotification(`Kode promo "${newCode.code}" berhasil dibuat.`);
+            const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+            if (sessionError || !sessionData.session) {
+                alert('Error: Anda harus login untuk membuat kode promo.');
+                console.error('Session error:', sessionError);
+                return;
+            }
+            const vendorId = sessionData.session.user.id;
+            const { error: insertError } = await supabase.from('promo_codes').insert([{
+                ...promoCodeData,
+                usage_count: 0,
+                vendor_id: vendorId
+            }]);
+            error = insertError;
         } else if (selectedCode) {
-            const updatedCode = {
-                ...selectedCode,
-                code: formData.code.toUpperCase(),
-                discountType: formData.discountType,
-                discountValue: Number(formData.discountValue),
-                isActive: formData.isActive,
-                maxUsage: formData.maxUsage ? Number(formData.maxUsage) : null,
-                expiryDate: formData.expiryDate || null,
-            };
-            setPromoCodes(prev => prev.map(c => c.id === selectedCode.id ? updatedCode : c));
-            showNotification(`Kode promo "${updatedCode.code}" berhasil diperbarui.`);
+            const { error: updateError } = await supabase.from('promo_codes').update(promoCodeData).match({ id: selectedCode.id });
+            error = updateError;
         }
-        handleCloseModal();
+
+        if (error) {
+            console.error('Error saving promo code:', error);
+            showNotification(`Gagal menyimpan kode promo: ${error.message}`);
+        } else {
+            showNotification(`Kode promo berhasil ${modalMode === 'add' ? 'dibuat' : 'diperbarui'}.`);
+            handleCloseModal();
+            window.location.reload();
+        }
     };
 
-    const handleDelete = (codeId: string) => {
+    const handleDelete = async (codeId: string) => {
         const isUsed = projects.some(p => p.promoCodeId === codeId);
         if (isUsed) {
             showNotification('Kode promo tidak dapat dihapus karena sedang digunakan pada proyek.');
             return;
         }
         if (window.confirm("Apakah Anda yakin ingin menghapus kode promo ini?")) {
-            setPromoCodes(prev => prev.filter(c => c.id !== codeId));
-            showNotification('Kode promo berhasil dihapus.');
+            const { error } = await supabase.from('promo_codes').delete().match({ id: codeId });
+            if (error) {
+                console.error('Error deleting promo code:', error);
+                showNotification(`Gagal menghapus kode promo: ${error.message}`);
+            } else {
+                showNotification('Kode promo berhasil dihapus.');
+                window.location.reload();
+            }
         }
     };
 

@@ -7,6 +7,7 @@ import SignaturePad from './SignaturePad';
 import DonutChart from './DonutChart';
 import { EyeIcon, PencilIcon, Trash2Icon, FileTextIcon, PlusIcon, PrinterIcon, CreditCardIcon, Share2Icon, HistoryIcon, DollarSignIcon, FolderKanbanIcon, UsersIcon, TrendingUpIcon, AlertCircleIcon, LightbulbIcon, MessageSquareIcon, PhoneIncomingIcon, MapPinIcon, QrCodeIcon, StarIcon, TrendingDownIcon, ArrowDownIcon, ArrowUpIcon, DownloadIcon, WhatsappIcon } from '../constants';
 import { cleanPhoneNumber } from '../constants';
+import { clientsService, projectsService, transactionsService, cardsService, promoCodesService } from '../services/supabaseService';
 
 const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(amount);
@@ -602,6 +603,7 @@ const Clients: React.FC<ClientsProps> = ({ clients, setClients, projects, setPro
     const [selectedClient, setSelectedClient] = useState<Client | null>(null);
     const [selectedProject, setSelectedProject] = useState<Project | null>(null);
     const [formData, setFormData] = useState(initialFormState);
+    const [isLoading, setIsLoading] = useState(false);
     
     const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
     const [clientForDetail, setClientForDetail] = useState<Client | null>(null);
@@ -732,6 +734,7 @@ const Clients: React.FC<ClientsProps> = ({ clients, setClients, projects, setPro
     };
 
     const handleCloseModal = () => {
+        if (isLoading) return;
         setIsModalOpen(false);
         setDocumentToView(null);
         setIsSignatureModalOpen(false);
@@ -855,193 +858,207 @@ const Clients: React.FC<ClientsProps> = ({ clients, setClients, projects, setPro
         return data;
     }, [clients]);
     
-    const handleFormSubmit = (e: React.FormEvent) => {
+    const handleFormSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
+        setIsLoading(true);
         
-        const selectedPackage = packages.find(p => p.id === formData.packageId);
-        if (!selectedPackage) {
-            alert('Harap pilih paket layanan.');
+        try {
+            const selectedPackage = packages.find(p => p.id === formData.packageId);
+            if (!selectedPackage) {
+                throw new Error('Harap pilih paket layanan.');
+            }
+
+            const selectedAddOns = addOns.filter(addon => formData.selectedAddOnIds.includes(addon.id));
+            const totalBeforeDiscount = selectedPackage.price + selectedAddOns.reduce((sum, addon) => sum + addon.price, 0);
+            let finalDiscountAmount = 0;
+            const promoCode = promoCodes.find(p => p.id === formData.promoCodeId);
+            if (promoCode) {
+                if (promoCode.discountType === 'percentage') {
+                    finalDiscountAmount = (totalBeforeDiscount * promoCode.discountValue) / 100;
+                } else {
+                    finalDiscountAmount = promoCode.discountValue;
+                }
+            }
+            const totalProject = totalBeforeDiscount - finalDiscountAmount;
+
+            if (modalMode === 'add') {
+                let clientToUse: Client;
+                if (selectedClient) {
+                    clientToUse = selectedClient;
+                } else {
+                    const newClientData: Omit<Client, 'id'> = {
+                        name: formData.clientName,
+                        email: formData.email,
+                        phone: formData.phone,
+                        whatsapp: formData.whatsapp,
+                        instagram: formData.instagram,
+                        clientType: formData.clientType,
+                        since: new Date().toISOString().split('T')[0],
+                        status: ClientStatus.ACTIVE,
+                        lastContact: new Date().toISOString(),
+                        portalAccessId: crypto.randomUUID(),
+                    };
+                    clientToUse = await clientsService.create(newClientData);
+                }
+
+                const dpAmount = Number(formData.dp) || 0;
+                const remainingPayment = totalProject - dpAmount;
+
+                const physicalItemsFromPackage = selectedPackage.physicalItems.map((item, index) => ({
+                    id: `pi-${Date.now()}-${index}`,
+                    type: 'Custom' as 'Custom',
+                    customName: item.name,
+                    details: item.name,
+                    cost: item.price,
+                }));
+
+                const printingCostFromPackage = physicalItemsFromPackage.reduce((sum, item) => sum + item.cost, 0);
+
+                const newProjectData: Omit<Project, 'id'> = {
+                    projectName: formData.projectName,
+                    clientName: clientToUse.name,
+                    clientId: clientToUse.id,
+                    projectType: formData.projectType,
+                    packageName: selectedPackage.name,
+                    packageId: selectedPackage.id,
+                    addOns: selectedAddOns,
+                    date: formData.date,
+                    location: formData.location,
+                    progress: 0,
+                    status: 'Dikonfirmasi',
+                    totalCost: totalProject,
+                    amountPaid: dpAmount,
+                    paymentStatus: dpAmount > 0 ? (remainingPayment <= 0 ? PaymentStatus.LUNAS : PaymentStatus.DP_TERBAYAR) : PaymentStatus.BELUM_BAYAR,
+                    team: [],
+                    notes: formData.notes,
+                    accommodation: formData.accommodation,
+                    driveLink: formData.driveLink,
+                    promoCodeId: formData.promoCodeId || undefined,
+                    discountAmount: finalDiscountAmount > 0 ? finalDiscountAmount : undefined,
+                    printingDetails: physicalItemsFromPackage,
+                    printingCost: printingCostFromPackage,
+                    completedDigitalItems: [],
+                };
+                const createdProject = await projectsService.create(newProjectData);
+
+                if (createdProject.amountPaid > 0) {
+                    const newTransaction: Omit<Transaction, 'id'> = {
+                        date: new Date().toISOString().split('T')[0],
+                        description: `DP Proyek ${createdProject.projectName}`,
+                        amount: createdProject.amountPaid,
+                        type: TransactionType.INCOME,
+                        projectId: createdProject.id,
+                        category: 'DP Proyek',
+                        method: 'Transfer Bank',
+                        cardId: formData.dpDestinationCardId,
+                    };
+                    await transactionsService.create(newTransaction);
+                    const card = cards.find(c => c.id === formData.dpDestinationCardId);
+                    await cardsService.update(formData.dpDestinationCardId, { balance: (card?.balance || 0) + createdProject.amountPaid });
+                }
+                if (promoCode) {
+                    await promoCodesService.update(promoCode.id, { usageCount: (promoCode.usageCount || 0) + 1 });
+                }
+                showNotification(`Klien ${clientToUse.name} dan proyek baru berhasil ditambahkan.`);
+
+            } else if (modalMode === 'edit' && selectedClient && selectedProject) {
+                await clientsService.update(selectedClient.id, { name: formData.clientName, email: formData.email, phone: formData.phone, whatsapp: formData.whatsapp, instagram: formData.instagram, clientType: formData.clientType });
+
+                const amountPaid = selectedProject.amountPaid; // Keep existing payment data
+                const remainingPayment = totalProject - amountPaid;
+
+                await projectsService.update(selectedProject.id, {
+                    projectName: formData.projectName,
+                    projectType: formData.projectType,
+                    location: formData.location,
+                    date: formData.date,
+                    packageName: selectedPackage.name,
+                    packageId: selectedPackage.id,
+                    addOns: selectedAddOns,
+                    totalCost: totalProject,
+                    paymentStatus: amountPaid > 0 ? (remainingPayment <= 0 ? PaymentStatus.LUNAS : PaymentStatus.DP_TERBAYAR) : PaymentStatus.BELUM_BAYAR,
+                    notes: formData.notes,
+                    promoCodeId: formData.promoCodeId || undefined,
+                    discountAmount: finalDiscountAmount > 0 ? finalDiscountAmount : undefined,
+                });
+                showNotification(`Data klien & proyek berhasil diperbarui.`);
+            }
+
+            handleCloseModal();
+            window.location.reload();
+        } catch (error) {
+            showNotification(`Terjadi kesalahan: ${error.message}`);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+    
+    const handleDeleteClient = async (clientId: string) => {
+        if (window.confirm("Menghapus klien akan menghapus semua proyek dan transaksi terkait. Apakah Anda yakin?")) {
+            setIsLoading(true);
+            try {
+                // This is a cascading delete. It should be handled by the database with foreign key constraints (ON DELETE CASCADE).
+                // If not, we would have to delete all related items manually. Assuming the DB handles it.
+                await clientsService.delete(clientId);
+                showNotification("Klien berhasil dihapus.");
+                window.location.reload();
+            } catch (error) {
+                showNotification(`Gagal menghapus klien: ${error.message}`);
+            } finally {
+                setIsLoading(false);
+                setIsDetailModalOpen(false);
+            }
+        }
+    };
+
+    const handleRecordPayment = async (projectId: string, amount: number, destinationCardId: string) => {
+        setIsLoading(true);
+        const project = projects.find(p => p.id === projectId);
+        if (!project) {
+            showNotification('Proyek tidak ditemukan.');
+            setIsLoading(false);
             return;
         }
-
-        const selectedAddOns = addOns.filter(addon => formData.selectedAddOnIds.includes(addon.id));
-        const totalBeforeDiscount = selectedPackage.price + selectedAddOns.reduce((sum, addon) => sum + addon.price, 0);
-        let finalDiscountAmount = 0;
-        const promoCode = promoCodes.find(p => p.id === formData.promoCodeId);
-        if (promoCode) {
-            if (promoCode.discountType === 'percentage') {
-                finalDiscountAmount = (totalBeforeDiscount * promoCode.discountValue) / 100;
-            } else {
-                finalDiscountAmount = promoCode.discountValue;
-            }
-        }
-        const totalProject = totalBeforeDiscount - finalDiscountAmount;
-
-        if (modalMode === 'add') {
-             let clientId = selectedClient?.id;
-             if (!selectedClient) { // New client
-                clientId = `CLI${Date.now()}`;
-                const newClient: Client = {
-                    id: clientId,
-                    name: formData.clientName,
-                    email: formData.email,
-                    phone: formData.phone,
-                    whatsapp: formData.whatsapp,
-                    instagram: formData.instagram,
-                    clientType: formData.clientType,
-                    since: new Date().toISOString().split('T')[0],
-                    status: ClientStatus.ACTIVE,
-                    lastContact: new Date().toISOString(),
-                    portalAccessId: crypto.randomUUID(),
-                };
-                setClients(prev => [newClient, ...prev]);
-             }
-             
-            const dpAmount = Number(formData.dp) || 0;
-            const remainingPayment = totalProject - dpAmount;
-
-            const physicalItemsFromPackage = selectedPackage.physicalItems.map((item, index) => ({
-                id: `pi-${Date.now()}-${index}`,
-                type: 'Custom' as 'Custom',
-                customName: item.name,
-                details: item.name,
-                cost: item.price,
-            }));
-
-            const printingCostFromPackage = physicalItemsFromPackage.reduce((sum, item) => sum + item.cost, 0);
-
-            const newProject: Project = {
-                id: `PRJ${Date.now()}`,
-                projectName: formData.projectName,
-                clientName: formData.clientName,
-                clientId: clientId!,
-                projectType: formData.projectType,
-                packageName: selectedPackage.name,
-                packageId: selectedPackage.id,
-                addOns: selectedAddOns,
-                date: formData.date,
-                location: formData.location,
-                progress: 0,
-                status: 'Dikonfirmasi',
-                totalCost: totalProject,
-                amountPaid: dpAmount,
-                paymentStatus: dpAmount > 0 ? (remainingPayment <= 0 ? PaymentStatus.LUNAS : PaymentStatus.DP_TERBAYAR) : PaymentStatus.BELUM_BAYAR,
-                team: [],
-                notes: formData.notes,
-                accommodation: formData.accommodation,
-                driveLink: formData.driveLink,
-                promoCodeId: formData.promoCodeId || undefined,
-                discountAmount: finalDiscountAmount > 0 ? finalDiscountAmount : undefined,
-                printingDetails: physicalItemsFromPackage,
-                printingCost: printingCostFromPackage,
-                completedDigitalItems: [],
+    
+        try {
+            const newTransactionData: Omit<Transaction, 'id'> = {
+                date: new Date().toISOString().split('T')[0],
+                description: `Pembayaran Proyek ${project.projectName}`,
+                amount: amount,
+                type: TransactionType.INCOME,
+                projectId: project.id,
+                category: 'Pelunasan Proyek',
+                method: 'Transfer Bank',
+                cardId: destinationCardId,
             };
-            setProjects(prev => [newProject, ...prev]);
+            await transactionsService.create(newTransactionData);
 
-            if (newProject.amountPaid > 0) {
-                 const newTransaction: Transaction = {
-                    id: `TRN-DP-${newProject.id}`,
-                    date: new Date().toISOString().split('T')[0],
-                    description: `DP Proyek ${newProject.projectName}`,
-                    amount: newProject.amountPaid,
-                    type: TransactionType.INCOME,
-                    projectId: newProject.id,
-                    category: 'DP Proyek',
-                    method: 'Transfer Bank',
-                    cardId: formData.dpDestinationCardId,
-                };
-                setTransactions(prev => [...prev, newTransaction].sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
-                setCards(prev => prev.map(c => c.id === formData.dpDestinationCardId ? {...c, balance: c.balance + newProject.amountPaid} : c));
-            }
-             if (promoCode) {
-                setPromoCodes(prev => prev.map(p => p.id === promoCode.id ? { ...p, usageCount: p.usageCount + 1 } : p));
-            }
-            showNotification(`Klien ${formData.clientName} dan proyek baru berhasil ditambahkan.`);
+            const card = cards.find(c => c.id === destinationCardId);
+            await cardsService.update(destinationCardId, { balance: (card?.balance || 0) + amount });
 
-        } else if (modalMode === 'edit' && selectedClient && selectedProject) {
-            setClients(prev => prev.map(c => c.id === selectedClient.id ? { ...c, name: formData.clientName, email: formData.email, phone: formData.phone, whatsapp: formData.whatsapp, instagram: formData.instagram, clientType: formData.clientType } : c));
-            
-            setProjects(prev => prev.map(p => {
-                if (p.id === selectedProject.id) {
-                    const amountPaid = p.amountPaid; // Keep existing payment data
-                    const remainingPayment = totalProject - amountPaid;
-                    return {
-                        ...p,
-                        projectName: formData.projectName,
-                        projectType: formData.projectType,
-                        location: formData.location,
-                        date: formData.date,
-                        packageName: selectedPackage.name,
-                        packageId: selectedPackage.id,
-                        addOns: selectedAddOns,
-                        totalCost: totalProject,
-                        paymentStatus: amountPaid > 0 ? (remainingPayment <= 0 ? PaymentStatus.LUNAS : PaymentStatus.DP_TERBAYAR) : PaymentStatus.BELUM_BAYAR,
-                        notes: formData.notes,
-                        promoCodeId: formData.promoCodeId || undefined,
-                        discountAmount: finalDiscountAmount > 0 ? finalDiscountAmount : undefined,
-                    };
+            const newAmountPaid = project.amountPaid + amount;
+            const remaining = project.totalCost - newAmountPaid;
+            await projectsService.update(project.id, {
+                amountPaid: newAmountPaid,
+                paymentStatus: remaining <= 0 ? PaymentStatus.LUNAS : PaymentStatus.DP_TERBAYAR
+            });
+
+            showNotification('Pembayaran berhasil dicatat.');
+            addNotification({
+                title: 'Pembayaran Diterima',
+                message: `Pembayaran sebesar ${formatCurrency(amount)} untuk proyek "${project.projectName}" telah diterima.`,
+                icon: 'payment',
+                link: {
+                    view: ViewType.CLIENTS,
+                    action: { type: 'VIEW_CLIENT_DETAILS', id: project.clientId }
                 }
-                return p;
-            }));
-             showNotification(`Data klien & proyek berhasil diperbarui.`);
+            });
+            window.location.reload();
+        } catch (error) {
+            showNotification(`Gagal mencatat pembayaran: ${error.message}`);
+        } finally {
+            setIsLoading(false);
         }
-        
-        handleCloseModal();
-    };
-    
-    const handleDeleteClient = (clientId: string) => {
-        if (window.confirm("Menghapus klien akan menghapus semua proyek dan transaksi terkait. Apakah Anda yakin?")) {
-            setClients(prev => prev.filter(c => c.id !== clientId));
-            const projectsToDelete = projects.filter(p => p.clientId === clientId).map(p => p.id);
-            setProjects(prev => prev.filter(p => p.clientId !== clientId));
-            setTransactions(prev => prev.filter(t => !projectsToDelete.includes(t.projectId || '')));
-            setIsDetailModalOpen(false);
-            showNotification("Klien berhasil dihapus.");
-        }
-    };
-
-    const handleRecordPayment = (projectId: string, amount: number, destinationCardId: string) => {
-        const project = projects.find(p => p.id === projectId);
-        if (!project) return;
-    
-        const newTransaction: Transaction = {
-            id: `TRN-PAY-${Date.now()}`,
-            date: new Date().toISOString().split('T')[0],
-            description: `Pembayaran Proyek ${project.projectName}`,
-            amount: amount,
-            type: TransactionType.INCOME,
-            projectId: project.id,
-            category: 'Pelunasan Proyek',
-            method: 'Transfer Bank',
-            cardId: destinationCardId,
-        };
-    
-        setTransactions(prev => [...prev, newTransaction].sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
-        setCards(prev => prev.map(c => c.id === destinationCardId ? {...c, balance: c.balance + amount} : c));
-    
-        setProjects(prev => prev.map(p => {
-            if (p.id === project.id) {
-                const newAmountPaid = p.amountPaid + amount;
-                const remaining = p.totalCost - newAmountPaid;
-                return {
-                    ...p,
-                    amountPaid: newAmountPaid,
-                    paymentStatus: remaining <= 0 ? PaymentStatus.LUNAS : PaymentStatus.DP_TERBAYAR
-                };
-            }
-            return p;
-        }));
-    
-        showNotification('Pembayaran berhasil dicatat.');
-        addNotification({
-            title: 'Pembayaran Diterima',
-            message: `Pembayaran sebesar ${formatCurrency(amount)} untuk proyek "${project.projectName}" telah diterima.`,
-            icon: 'payment',
-            link: {
-                view: ViewType.CLIENTS,
-                action: { type: 'VIEW_CLIENT_DETAILS', id: project.clientId }
-            }
-        });
     };
     
     const handleDownloadClients = () => {

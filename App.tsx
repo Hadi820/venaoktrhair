@@ -577,9 +577,9 @@ const App: React.FC = () => {
             packages={packages} addOns={addOns}
             transactions={transactions} setTransactions={setTransactionsSync}
             userProfile={profile} setProfile={handleSetProfile} showNotification={showNotification}
-            cards={cards} setCards={setCards}
-            pockets={pockets} setPockets={setPockets}
-            promoCodes={promoCodes} setPromoCodes={setPromoCodes}
+            cards={cards} setCards={setCardsSync}
+            pockets={pockets} setPockets={setPocketsSync}
+            promoCodes={promoCodes} setPromoCodes={setPromoCodesSync}
         />;
       case ViewType.BOOKING:
         return <Booking
