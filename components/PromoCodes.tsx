@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { supabase } from '../services/supabaseService';
+import { supabase } from '../lib/supabase';
 import { PromoCode, Project } from '../types';
 import PageHeader from './PageHeader';
 import Modal from './Modal';

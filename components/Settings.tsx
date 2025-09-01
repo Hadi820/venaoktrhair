@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { supabase } from '../services/supabaseService';
+import { supabase } from '../lib/supabase';
 import { Profile, Transaction, Project, User, ViewType, ProjectStatusConfig, SubStatusConfig, PublicPageConfig, Package } from '../types';
 import PageHeader from './PageHeader';
 import Modal from './Modal';

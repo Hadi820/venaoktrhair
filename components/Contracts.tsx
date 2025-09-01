@@ -1,6 +1,6 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
-import { supabase } from '../services/supabaseService';
+import { supabase } from '../lib/supabase';
 import { Contract, Client, Project, Profile, NavigationAction, Package } from '../types';
 import PageHeader from './PageHeader';
 import Modal from './Modal';
