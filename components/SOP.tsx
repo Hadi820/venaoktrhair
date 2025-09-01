@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { supabase } from '../services/supabaseService';
 import * as types from '../types';
 import PageHeader from './PageHeader';
 import Modal from './Modal';
@@ -47,32 +48,52 @@ const SOPManagement: React.FC<SOPProps> = ({ sops, setSops, profile, showNotific
         setFormData(prev => ({ ...prev, [name]: value }));
     };
 
-    const handleSubmit = (e: React.FormEvent) => {
+    const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
+
+        const sopData = {
+            ...formData,
+            last_updated: new Date().toISOString(),
+        };
+
+        let error;
+
         if (modalMode === 'add') {
-            const newSop: types.SOP = {
-                id: crypto.randomUUID(),
-                ...formData,
-                lastUpdated: new Date().toISOString(),
-            };
-            setSops(prev => [...prev, newSop].sort((a,b) => a.title.localeCompare(b.title)));
-            showNotification('SOP baru berhasil ditambahkan.');
+            const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+            if (sessionError || !sessionData.session) {
+                alert('Error: Anda harus login untuk membuat SOP.');
+                console.error('Session error:', sessionError);
+                return;
+            }
+            const vendorId = sessionData.session.user.id;
+            const { error: insertError } = await supabase.from('sops').insert([{ ...sopData, vendor_id: vendorId }]);
+            error = insertError;
+
         } else if (selectedSop) {
-            const updatedSop = {
-                ...selectedSop,
-                ...formData,
-                lastUpdated: new Date().toISOString(),
-            };
-            setSops(prev => prev.map(s => s.id === selectedSop.id ? updatedSop : s));
-            showNotification('SOP berhasil diperbarui.');
+            const { error: updateError } = await supabase.from('sops').update(sopData).match({ id: selectedSop.id });
+            error = updateError;
         }
-        handleCloseModal();
+
+        if (error) {
+            console.error('Error saving SOP:', error);
+            showNotification(`Gagal menyimpan SOP: ${error.message}`);
+        } else {
+            showNotification(`SOP berhasil ${modalMode === 'add' ? 'dibuat' : 'diperbarui'}.`);
+            handleCloseModal();
+            window.location.reload();
+        }
     };
     
-    const handleDelete = (sopId: string) => {
+    const handleDelete = async (sopId: string) => {
         if (window.confirm("Yakin ingin menghapus SOP ini?")) {
-            setSops(prev => prev.filter(s => s.id !== sopId));
-            showNotification('SOP berhasil dihapus.');
+            const { error } = await supabase.from('sops').delete().match({ id: sopId });
+            if (error) {
+                console.error('Error deleting SOP:', error);
+                showNotification(`Gagal menghapus SOP: ${error.message}`);
+            } else {
+                showNotification('SOP berhasil dihapus.');
+                window.location.reload();
+            }
         }
     };
 

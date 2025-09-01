@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react';
+import { supabase } from '../services/supabaseService';
 import { SocialMediaPost, PostStatus, PostType, Project } from '../types';
 import PageHeader from './PageHeader';
 import Modal from './Modal';
@@ -165,24 +166,45 @@ export const SocialPlanner: React.FC<SocialPlannerProps> = ({ posts, setPosts, p
 
     const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => e.preventDefault();
 
-    const handleDrop = (e: React.DragEvent<HTMLDivElement>, newStatus: PostStatus) => {
+    const handleDrop = async (e: React.DragEvent<HTMLDivElement>, newStatus: PostStatus) => {
         e.preventDefault();
         const postId = e.dataTransfer.getData("postId");
-        setPosts(prev => prev.map(p => p.id === postId ? { ...p, status: newStatus } : p));
-        setDraggedPostId(null);
-        setActiveFilter('all'); // Reset filter after dropping
         const post = posts.find(p => p.id === postId);
+
         if (post) {
-            showNotification(`Post untuk "${post.clientName}" dipindahkan ke "${newStatus}".`);
+            // Optimistic UI update
+            setPosts(prev => prev.map(p => p.id === postId ? { ...p, status: newStatus } : p));
+
+            const { error } = await supabase
+                .from('social_media_posts')
+                .update({ status: newStatus })
+                .match({ id: postId });
+
+            if (error) {
+                showNotification(`Gagal memindahkan post: ${error.message}`);
+                // Revert UI change on error
+                setPosts(prev => prev.map(p => p.id === postId ? { ...p, status: post.status } : p));
+            } else {
+                showNotification(`Post untuk "${post.client_name}" dipindahkan ke "${newStatus}".`);
+            }
         }
+        setDraggedPostId(null);
+        setActiveFilter('all');
     };
 
     const handleOpenModal = (mode: 'add' | 'edit', post?: SocialMediaPost) => {
         setModalMode(mode);
         if (mode === 'edit' && post) {
             setSelectedPost(post);
-            const { clientName, platform, ...rest } = post;
-            setFormData(rest);
+            setFormData({
+                projectId: post.project_id,
+                postType: post.post_type,
+                scheduledDate: post.scheduled_date,
+                caption: post.caption,
+                mediaUrl: post.media_url,
+                status: post.status,
+                notes: post.notes,
+            });
         } else {
             setSelectedPost(null);
             setFormData(initialFormState);
@@ -199,7 +221,7 @@ export const SocialPlanner: React.FC<SocialPlannerProps> = ({ posts, setPosts, p
         setFormData(prev => ({...prev, [name]: value}));
     };
     
-    const handleSubmit = (e: React.FormEvent) => {
+    const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!formData.projectId) {
             alert('Harap pilih proyek terlebih dahulu.');
@@ -216,29 +238,53 @@ export const SocialPlanner: React.FC<SocialPlannerProps> = ({ posts, setPosts, p
         if (formData.postType === PostType.TIKTOK) platform = 'TikTok';
         if (formData.postType === PostType.BLOG) platform = 'Website';
 
-        const postData: Omit<SocialMediaPost, 'id'> = {
-            ...formData,
-            clientName: project.clientName,
+        const postData = {
+            project_id: formData.projectId,
+            post_type: formData.postType,
+            scheduled_date: formData.scheduledDate,
+            caption: formData.caption,
+            media_url: formData.mediaUrl,
+            status: formData.status,
+            notes: formData.notes,
+            client_name: project.clientName,
             platform,
         };
 
+        let error;
+
         if (modalMode === 'add') {
-            const newPost = { ...postData, id: crypto.randomUUID() };
-            setPosts(prev => [...prev, newPost]);
-            showNotification('Postingan baru berhasil ditambahkan ke draf.');
+            const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+            if (sessionError || !sessionData.session) {
+                alert('Error: Anda harus login untuk membuat post.');
+                return;
+            }
+            const vendorId = sessionData.session.user.id;
+            const { error: insertError } = await supabase.from('social_media_posts').insert([{ ...postData, vendor_id: vendorId }]);
+            error = insertError;
         } else if (selectedPost) {
-            const updatedPost = { ...postData, id: selectedPost.id };
-            setPosts(prev => prev.map(p => p.id === selectedPost.id ? updatedPost : p));
-            showNotification('Postingan berhasil diperbarui.');
+            const { error: updateError } = await supabase.from('social_media_posts').update(postData).match({ id: selectedPost.id });
+            error = updateError;
         }
-        handleCloseModal();
+
+        if (error) {
+            showNotification(`Gagal menyimpan post: ${error.message}`);
+        } else {
+            showNotification(`Postingan berhasil ${modalMode === 'add' ? 'disimpan' : 'diperbarui'}.`);
+            handleCloseModal();
+            window.location.reload();
+        }
     };
     
-    const handleDelete = (postId: string) => {
+    const handleDelete = async (postId: string) => {
         if(window.confirm('Yakin ingin menghapus postingan ini?')) {
-            setPosts(prev => prev.filter(p => p.id !== postId));
-            showNotification('Postingan berhasil dihapus.');
-            handleCloseModal();
+            const { error } = await supabase.from('social_media_posts').delete().match({ id: postId });
+            if (error) {
+                showNotification(`Gagal menghapus post: ${error.message}`);
+            } else {
+                showNotification('Postingan berhasil dihapus.');
+                handleCloseModal();
+                window.location.reload();
+            }
         }
     }
     

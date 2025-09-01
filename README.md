@@ -26,22 +26,22 @@ This is the Vena Pictures Dashboard with full Supabase integration for persisten
 
 ### 1. Environment Configuration
 
-1. Copy `.env.example` to `.env.local`:
+1. Copy `.env.example` to `.env`:
    ```bash
-   cp .env.example .env.local
+   cp .env.example .env
    ```
 
-2. Update the environment variables with your Supabase credentials:
+2. Update the `.env` file with your Supabase credentials:
    ```
-   REACT_APP_SUPABASE_URL=https://your-project.supabase.co
-   REACT_APP_SUPABASE_ANON_KEY=your-anon-key-here
+   VITE_SUPABASE_URL=https://your-project.supabase.co
+   VITE_SUPABASE_ANON_KEY=your-anon-key-here
    ```
+   **Note**: Ensure these variables are correctly set. The application will not function correctly without them.
 
 ### 2. Supabase Setup
 
-1. **Enable Supabase Integration**: Click the Supabase button on the top right of the platform
-2. **Database Schema**: The app will automatically create all necessary tables
-3. **Import Mock Data**: Use the built-in data migration tool to populate with sample data
+1. **Database Schema**: The application is designed to work with a pre-defined Supabase schema. You can find the table structure in `supabase-schema.sql`.
+2. **Import Mock Data (Optional)**: If you want to populate your database with sample data, you can use the `supabase-mock-data.sql` file.
 
 ### 3. Running the Application
 
@@ -58,80 +58,38 @@ npm run build
 
 ## Database Schema
 
-The application creates the following tables in Supabase:
+The application relies on a Supabase database with tables such as:
 
 - `users` - User accounts and permissions
-- `profile` - Vendor profile and settings
+- `profiles` - Vendor profile and settings
 - `clients` - Client information
 - `projects` - Project details and status
 - `team_members` - Freelancer/team member data
 - `transactions` - Financial transactions
 - `packages` - Service packages
-- `add_ons` - Additional services
 - `leads` - Prospect leads
-- `assets` - Company assets
 - `contracts` - Legal contracts
-- `notifications` - System notifications
-- `social_media_posts` - Social media content planning
-- `promo_codes` - Discount codes
-- `sops` - Standard Operating Procedures
-- And more...
+- ...and more.
 
-## Data Migration
-
-The app supports both localStorage (for development) and Supabase (for production):
-
-- **Development Mode**: Uses localStorage for quick testing
-- **Production Mode**: Uses Supabase for persistent, scalable storage
-- **Migration Tool**: Built-in tool to migrate data from localStorage to Supabase
+Refer to `supabase-schema.sql` for the complete schema.
 
 ## API Structure
 
-All CRUD operations are handled through:
+All CRUD operations are handled through a service-oriented architecture:
 
-- `lib/supabase.ts` - Supabase client configuration
-- `lib/database.ts` - Database schema and initialization
-- `lib/api.ts` - API functions for all entities
-- `hooks/useSupabase.ts` - React hooks for data management
-
-## Key Features
-
-### Real-time Updates
-- Automatic data synchronization across sessions
-- Real-time notifications and updates
-
-### Data Isolation
-- Session-based table naming for multi-tenant support
-- Secure data separation between different instances
-
-### CRUD Operations
-- Create, Read, Update, Delete for all modules
-- Batch operations and data validation
-- Error handling and rollback support
-
-### Authentication & Authorization
-- User role-based access control
-- Permission management for different modules
-- Secure API endpoints
-
-## Usage
-
-1. **First Time Setup**: Navigate to `#/supabase-setup` to initialize the database
-2. **Data Import**: Use the migration tool to import mock data
-3. **Switch Modes**: Toggle between localStorage and Supabase in settings
-4. **CRUD Operations**: All modules support full CRUD operations automatically
+- `lib/supabase.ts` - Initializes the Supabase client.
+- `services/supabaseService.ts` - Contains all the functions that interact with the Supabase API for each entity (e.g., clients, projects).
+- `hooks/useSupabaseData.ts` - A React hook that fetches data using `supabaseService` and manages the application's state.
 
 ## Development
 
-The application uses a hybrid approach:
-- Falls back to localStorage when Supabase is not available
-- Seamlessly switches between data sources
-- Maintains the same API interface for both storage methods
+This application uses **Supabase** as its sole data source. It does not use `localStorage` for data storage. All CRUD operations (Create, Read, Update, Delete) are performed directly against the Supabase database.
+
+If you are facing issues with data not being saved, please ensure that your Supabase URL and Anon Key are correctly configured in your `.env` file.
 
 ## Support
 
 For issues or questions:
-1. Check the browser console for detailed error messages
-2. Verify Supabase configuration and credentials
-3. Ensure database schema is properly created
-4. Test with mock data first before using production data
+1. Check the browser's developer console for any Supabase-related error messages.
+2. Double-check your Supabase configuration and credentials in the `.env` file.
+3. Ensure your Supabase database schema is correctly set up.

@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { supabase } from '../services/supabaseService';
 import { Profile, Transaction, Project, User, ViewType, ProjectStatusConfig, SubStatusConfig, PublicPageConfig, Package } from '../types';
 import PageHeader from './PageHeader';
 import Modal from './Modal';
@@ -354,10 +355,58 @@ const Settings: React.FC<SettingsProps> = ({ profile, setProfile, transactions, 
         }));
     };
 
-    const handleSubmit = (e: React.FormEvent) => {
+    const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
-        setShowSuccess(true);
-        setTimeout(() => setShowSuccess(false), 2000);
+
+        const { data: userData, error: userError } = await supabase.auth.getUser();
+        if (userError || !userData.user) {
+            alert('Could not get user session. Please log in again.');
+            return;
+        }
+
+        // This assumes the 'profile' state object is the single source of truth and is up-to-date
+        const profileDataForUpdate = {
+            full_name: profile.fullName,
+            company_name: profile.companyName,
+            email: profile.email,
+            phone: profile.phone,
+            website: profile.website,
+            address: profile.address,
+            bank_account: profile.bankAccount,
+            logo_base64: profile.logoBase64,
+            brand_color: profile.brandColor,
+            terms_and_conditions: profile.termsAndConditions,
+            income_categories: profile.incomeCategories,
+            expense_categories: profile.expenseCategories,
+            project_types: profile.projectTypes,
+            event_types: profile.eventTypes,
+            project_status_config: profile.projectStatusConfig,
+            notification_settings: profile.notificationSettings,
+            security_settings: profile.securitySettings,
+            authorized_signer: profile.authorizedSigner,
+            id_number: profile.idNumber,
+            bio: profile.bio,
+            briefing_template: profile.briefingTemplate,
+            contract_template: profile.contractTemplate,
+            package_categories: profile.packageCategories,
+            sop_categories: profile.sopCategories,
+            public_page_config: profile.publicPageConfig,
+        };
+
+        const { error } = await supabase
+            .from('profiles')
+            .update(profileDataForUpdate)
+            .eq('id', userData.user.id);
+
+        if (error) {
+            console.error('Error updating profile:', error);
+            alert(`Gagal menyimpan profil: ${error.message}`);
+        } else {
+            setShowSuccess(true);
+            setTimeout(() => setShowSuccess(false), 2000);
+            // No page reload is strictly necessary as the local state is already updated,
+            // but a notification is good practice. A small success message is already implemented.
+        }
     }
     
     // --- User Management Handlers ---

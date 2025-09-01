@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react';
+import { supabase } from '../services/supabaseService';
 import { Asset, AssetStatus, Profile } from '../types';
 import PageHeader from './PageHeader';
 import Modal from './Modal';
@@ -53,9 +54,12 @@ export const Assets: React.FC<AssetsProps> = ({ assets, setAssets, profile, show
         if (mode === 'edit' && asset) {
             setSelectedAsset(asset);
             setFormData({
-                ...asset,
-                purchasePrice: asset.purchasePrice.toString(),
-                serialNumber: asset.serialNumber || '',
+                name: asset.name,
+                category: asset.category,
+                purchaseDate: asset.purchase_date,
+                purchasePrice: asset.purchase_price.toString(),
+                serialNumber: asset.serial_number || '',
+                status: asset.status,
                 notes: asset.notes || '',
             });
         } else {
@@ -75,29 +79,56 @@ export const Assets: React.FC<AssetsProps> = ({ assets, setAssets, profile, show
         setFormData(prev => ({ ...prev, [name]: value }));
     };
 
-    const handleSubmit = (e: React.FormEvent) => {
+    const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
+
         const assetData = {
-            ...formData,
-            purchasePrice: Number(formData.purchasePrice)
+            name: formData.name,
+            category: formData.category,
+            purchase_date: formData.purchaseDate,
+            purchase_price: Number(formData.purchasePrice),
+            serial_number: formData.serialNumber,
+            status: formData.status,
+            notes: formData.notes,
         };
-        
+
+        let error;
+
         if (modalMode === 'add') {
-            const newAsset = { ...assetData, id: crypto.randomUUID() };
-            setAssets(prev => [...prev, newAsset]);
-            showNotification(`Aset "${newAsset.name}" berhasil ditambahkan.`);
+            const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+            if (sessionError || !sessionData.session) {
+                alert('Error: Anda harus login untuk membuat aset.');
+                console.error('Session error:', sessionError);
+                return;
+            }
+            const vendorId = sessionData.session.user.id;
+            const { error: insertError } = await supabase.from('assets').insert([{ ...assetData, vendor_id: vendorId }]);
+            error = insertError;
         } else if (selectedAsset) {
-            const updatedAsset = { ...selectedAsset, ...assetData };
-            setAssets(prev => prev.map(a => a.id === selectedAsset.id ? updatedAsset : a));
-            showNotification(`Aset "${updatedAsset.name}" berhasil diperbarui.`);
+            const { error: updateError } = await supabase.from('assets').update(assetData).match({ id: selectedAsset.id });
+            error = updateError;
         }
-        handleCloseModal();
+
+        if (error) {
+            console.error('Error saving asset:', error);
+            showNotification(`Gagal menyimpan aset: ${error.message}`);
+        } else {
+            showNotification(`Aset berhasil ${modalMode === 'add' ? 'ditambahkan' : 'diperbarui'}.`);
+            handleCloseModal();
+            window.location.reload();
+        }
     };
 
-    const handleDelete = (assetId: string) => {
+    const handleDelete = async (assetId: string) => {
         if (window.confirm("Apakah Anda yakin ingin menghapus aset ini?")) {
-            setAssets(prev => prev.filter(a => a.id !== assetId));
-            showNotification('Aset berhasil dihapus.');
+            const { error } = await supabase.from('assets').delete().match({ id: assetId });
+            if (error) {
+                console.error('Error deleting asset:', error);
+                showNotification(`Gagal menghapus aset: ${error.message}`);
+            } else {
+                showNotification('Aset berhasil dihapus.');
+                window.location.reload();
+            }
         }
     };
 

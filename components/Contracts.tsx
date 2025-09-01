@@ -1,5 +1,6 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
+import { supabase } from '../services/supabaseService';
 import { Contract, Client, Project, Profile, NavigationAction, Package } from '../types';
 import PageHeader from './PageHeader';
 import Modal from './Modal';
@@ -150,9 +151,29 @@ const Contracts: React.FC<ContractsProps> = ({ contracts, setContracts, clients,
             setModalMode(mode);
             if (mode === 'edit' && contract) {
                 setSelectedContract(contract);
-                setSelectedClientId(contract.clientId);
-                setSelectedProjectId(contract.projectId);
-                setFormData({ ...initialFormState, ...contract });
+                setSelectedClientId(contract.client_id);
+                setSelectedProjectId(contract.project_id);
+                setFormData({
+                    signingDate: contract.signing_date,
+                    signingLocation: contract.signing_location,
+                    clientName1: contract.client_name_1,
+                    clientAddress1: contract.client_address_1,
+                    clientPhone1: contract.client_phone_1,
+                    clientName2: contract.client_name_2 || '',
+                    clientAddress2: contract.client_address_2 || '',
+                    clientPhone2: contract.client_phone_2 || '',
+                    shootingDuration: contract.shooting_duration,
+                    guaranteedPhotos: contract.guaranteed_photos,
+                    albumDetails: contract.album_details,
+                    digitalFilesFormat: contract.digital_files_format,
+                    otherItems: contract.other_items,
+                    personnelCount: contract.personnel_count,
+                    deliveryTimeframe: contract.delivery_timeframe,
+                    dpDate: contract.dp_date,
+                    finalPaymentDate: contract.final_payment_date,
+                    cancellationPolicy: contract.cancellation_policy,
+                    jurisdiction: contract.jurisdiction,
+                });
             } else {
                 setSelectedContract(null);
                 setSelectedClientId(initialAction?.id || '');
@@ -191,7 +212,7 @@ const Contracts: React.FC<ContractsProps> = ({ contracts, setContracts, clients,
         setFormData(prev => ({ ...prev, [name]: value }));
     };
 
-    const handleSubmit = (e: React.FormEvent) => {
+    const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         
         if (!selectedProjectId) {
@@ -199,42 +220,94 @@ const Contracts: React.FC<ContractsProps> = ({ contracts, setContracts, clients,
             return;
         }
 
+        const contractData = {
+            client_id: selectedClientId,
+            project_id: selectedProjectId,
+            signing_date: formData.signingDate,
+            signing_location: formData.signingLocation,
+            client_name_1: formData.clientName1,
+            client_address_1: formData.clientAddress1,
+            client_phone_1: formData.clientPhone1,
+            client_name_2: formData.clientName2,
+            client_address_2: formData.clientAddress2,
+            client_phone_2: formData.clientPhone2,
+            shooting_duration: formData.shootingDuration,
+            guaranteed_photos: formData.guaranteedPhotos,
+            album_details: formData.albumDetails,
+            digital_files_format: formData.digitalFilesFormat,
+            other_items: formData.otherItems,
+            personnel_count: formData.personnelCount,
+            delivery_timeframe: formData.deliveryTimeframe,
+            dp_date: formData.dpDate,
+            final_payment_date: formData.finalPaymentDate,
+            cancellation_policy: formData.cancellationPolicy,
+            jurisdiction: formData.jurisdiction,
+        };
+
+        let error;
+
         if (modalMode === 'add') {
+            const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+            if (sessionError || !sessionData.session) {
+                alert('Error: Anda harus login untuk membuat kontrak.');
+                console.error('Session error:', sessionError);
+                return;
+            }
+            const vendorId = sessionData.session.user.id;
             const contractCount = contracts.length + 1;
-            const newContract: Contract = {
-                id: crypto.randomUUID(),
-                contractNumber: `VP/CTR/${new Date().getFullYear()}/${String(contractCount).padStart(3, '0')}`,
-                clientId: selectedClientId,
-                projectId: selectedProjectId,
-                createdAt: new Date().toISOString(),
-                ...formData,
-            };
-            setContracts(prev => [...prev, newContract]);
-            showNotification('Kontrak baru berhasil dibuat.');
+            const contractNumber = `VP/CTR/${new Date().getFullYear()}/${String(contractCount).padStart(3, '0')}`;
+
+            const { error: insertError } = await supabase.from('contracts').insert([{
+                ...contractData,
+                contract_number: contractNumber,
+                vendor_id: vendorId
+            }]);
+            error = insertError;
         } else if (selectedContract) {
-            const updatedContract: Contract = {
-                ...selectedContract,
-                ...formData
-            };
-            setContracts(prev => prev.map(c => c.id === selectedContract.id ? updatedContract : c));
-            showNotification('Kontrak berhasil diperbarui.');
+            const { error: updateError } = await supabase.from('contracts').update(contractData).match({ id: selectedContract.id });
+            error = updateError;
         }
-        handleCloseModal();
+
+        if (error) {
+            console.error('Error saving contract:', error);
+            showNotification(`Gagal menyimpan kontrak: ${error.message}`);
+        } else {
+            showNotification(`Kontrak berhasil ${modalMode === 'add' ? 'dibuat' : 'diperbarui'}.`);
+            handleCloseModal();
+            window.location.reload();
+        }
     };
 
-    const handleDelete = (contractId: string) => {
+    const handleDelete = async (contractId: string) => {
         if (window.confirm("Apakah Anda yakin ingin menghapus kontrak ini?")) {
-            setContracts(prev => prev.filter(c => c.id !== contractId));
-            showNotification('Kontrak berhasil dihapus.');
+            const { error } = await supabase.from('contracts').delete().match({ id: contractId });
+            if (error) {
+                console.error('Error deleting contract:', error);
+                showNotification(`Gagal menghapus kontrak: ${error.message}`);
+            } else {
+                showNotification('Kontrak berhasil dihapus.');
+                window.location.reload();
+            }
         }
     };
     
-    const handleSaveSignature = (signatureDataUrl: string) => {
+    const handleSaveSignature = async (signatureDataUrl: string) => {
         if (selectedContract) {
-            onSignContract(selectedContract.id, signatureDataUrl, 'vendor');
-            setSelectedContract(prev => prev ? { ...prev, vendorSignature: signatureDataUrl } : null);
+            const { error } = await supabase
+                .from('contracts')
+                .update({ vendor_signature: signatureDataUrl })
+                .match({ id: selectedContract.id });
+
+            if (error) {
+                console.error('Error saving signature:', error);
+                showNotification(`Gagal menyimpan tanda tangan: ${error.message}`);
+            } else {
+                showNotification('Tanda tangan berhasil disimpan.');
+                setIsSignatureModalOpen(false);
+                handleCloseModal();
+                window.location.reload();
+            }
         }
-        setIsSignatureModalOpen(false);
     };
 
     const stats = useMemo(() => {

@@ -6,6 +6,7 @@ import { PlusIcon, PencilIcon, Trash2Icon, Share2Icon, DownloadIcon, SendIcon, U
 import StatCard from './StatCard';
 import DonutChart from './DonutChart';
 import { cleanPhoneNumber } from '../constants';
+import { leadsService, clientsService, projectsService, transactionsService, promoCodesService, cardsService } from '../services/supabaseService';
 
 const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(amount);
@@ -279,29 +280,31 @@ const LeadCard: React.FC<{
     onClick: () => void;
     onNextStatus: () => void;
     onShare: (type: 'package' | 'booking') => void;
-}> = ({ lead, onDragStart, onClick, onNextStatus, onShare }) => {
+    onDelete: () => void;
+}> = ({ lead, onDragStart, onClick, onNextStatus, onShare, onDelete }) => {
     const isHot = useMemo(() => new Date(lead.date) > new Date(Date.now() - 24 * 60 * 60 * 1000), [lead.date]);
     const needsFollowUp = useMemo(() => lead.status === LeadStatus.DISCUSSION && new Date(lead.date) < new Date(Date.now() - 3 * 24 * 60 * 60 * 1000), [lead.date, lead.status]);
     const getInitials = (name: string) => name.split(' ').map(n => n[0]).slice(0, 2).join('').toUpperCase();
 
     const renderActions = () => {
+        const actionButtons = [];
         if (lead.status === LeadStatus.DISCUSSION) {
-            return (
-                <div className="flex items-center gap-2">
-                    <button onClick={(e) => { e.stopPropagation(); onShare('package'); }} className="button-secondary !p-2.5" title="Bagikan Paket"><Share2Icon className="w-4 h-4"/></button>
-                    <button onClick={(e) => { e.stopPropagation(); onNextStatus(); }} className="button-primary !text-xs !px-4 !py-2.5 inline-flex items-center gap-1.5">Follow Up <ChevronRightIcon className="w-4 h-4"/></button>
-                </div>
-            );
+            actionButtons.push(<button key="share-pkg" onClick={(e) => { e.stopPropagation(); onShare('package'); }} className="button-secondary !p-2.5" title="Bagikan Paket"><Share2Icon className="w-4 h-4"/></button>);
+            actionButtons.push(<button key="followup" onClick={(e) => { e.stopPropagation(); onNextStatus(); }} className="button-primary !text-xs !px-4 !py-2.5 inline-flex items-center gap-1.5">Follow Up <ChevronRightIcon className="w-4 h-4"/></button>);
         }
         if (lead.status === LeadStatus.FOLLOW_UP) {
-            return (
-                 <div className="flex items-center gap-2">
-                    <button onClick={(e) => { e.stopPropagation(); onShare('booking'); }} className="button-secondary !p-2.5" title="Kirim Form Booking"><SendIcon className="w-4 h-4"/></button>
-                    <button onClick={(e) => { e.stopPropagation(); onNextStatus(); }} className="button-primary !text-xs !px-4 !py-2.5 inline-flex items-center gap-1.5">Konversi <CheckCircleIcon className="w-4 h-4"/></button>
-                </div>
-            );
+            actionButtons.push(<button key="share-booking" onClick={(e) => { e.stopPropagation(); onShare('booking'); }} className="button-secondary !p-2.5" title="Kirim Form Booking"><SendIcon className="w-4 h-4"/></button>);
+            actionButtons.push(<button key="convert" onClick={(e) => { e.stopPropagation(); onNextStatus(); }} className="button-primary !text-xs !px-4 !py-2.5 inline-flex items-center gap-1.5">Konversi <CheckCircleIcon className="w-4 h-4"/></button>);
         }
-        return null;
+
+        return (
+            <div className="flex items-center gap-2">
+                <button onClick={(e) => { e.stopPropagation(); onDelete(); }} className="button-secondary !p-2.5 !text-brand-danger/80 hover:!bg-brand-danger/10" title="Hapus Prospek"><Trash2Icon className="w-4 h-4"/></button>
+                <div className="flex-grow flex justify-end gap-2">
+                    {actionButtons}
+                </div>
+            </div>
+        );
     };
 
     return (
@@ -372,6 +375,7 @@ export const Leads: React.FC<LeadsProps> = ({
     const [dateFrom, setDateFrom] = useState('');
     const [dateTo, setDateTo] = useState('');
     const [shareModalState, setShareModalState] = useState<{type: 'package' | 'booking', lead: Lead} | null>(null);
+    const [isLoading, setIsLoading] = useState(false);
 
     const publicLeadFormUrl = useMemo(() => `${window.location.origin}${window.location.pathname}#/public-lead-form/VEN001`, []);
     const publicBookingFormUrl = useMemo(() => `${window.location.origin}${window.location.pathname}#/public-booking/VEN001`, []);
@@ -422,7 +426,7 @@ export const Leads: React.FC<LeadsProps> = ({
 
     const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => e.preventDefault();
 
-    const handleDrop = (e: React.DragEvent<HTMLDivElement>, newStatus: LeadStatus) => {
+    const handleDrop = async (e: React.DragEvent<HTMLDivElement>, newStatus: LeadStatus) => {
         e.preventDefault();
         const leadId = e.dataTransfer.getData("leadId");
         const leadToUpdate = leads.find(l => l.id === leadId);
@@ -431,13 +435,19 @@ export const Leads: React.FC<LeadsProps> = ({
             if (newStatus === LeadStatus.CONVERTED) {
                 handleOpenModal('convert', leadToUpdate);
             } else {
-                setLeads(prev => prev.map(l => l.id === leadId ? { ...l, status: newStatus, date: new Date().toISOString() } : l));
+                try {
+                    await leadsService.update(leadId, { status: newStatus, date: new Date().toISOString() });
+                    showNotification(`Prospek "${leadToUpdate.name}" dipindahkan ke "${newStatus}".`);
+                    window.location.reload();
+                } catch (error) {
+                    showNotification(`Gagal memindahkan prospek: ${error.message}`);
+                }
             }
         }
         setDraggedLeadId(null);
     };
 
-    const handleNextStatus = (leadId: string, currentStatus: LeadStatus) => {
+    const handleNextStatus = async (leadId: string, currentStatus: LeadStatus) => {
         let newStatus: LeadStatus | null = null;
         if (currentStatus === LeadStatus.DISCUSSION) newStatus = LeadStatus.FOLLOW_UP;
         if (currentStatus === LeadStatus.FOLLOW_UP) newStatus = LeadStatus.CONVERTED;
@@ -448,8 +458,25 @@ export const Leads: React.FC<LeadsProps> = ({
             if (newStatus === LeadStatus.CONVERTED) {
                 handleOpenModal('convert', lead);
             } else {
-                setLeads(prev => prev.map(l => l.id === leadId ? { ...l, status: newStatus, date: new Date().toISOString() } : l));
-                showNotification(`Prospek "${lead.name}" dipindahkan ke "${newStatus}".`);
+                try {
+                    await leadsService.update(leadId, { status: newStatus, date: new Date().toISOString() });
+                    showNotification(`Prospek "${lead.name}" dipindahkan ke "${newStatus}".`);
+                    window.location.reload();
+                } catch (error) {
+                    showNotification(`Gagal memindahkan prospek: ${error.message}`);
+                }
+            }
+        }
+    };
+
+    const handleDelete = async (leadId: string) => {
+        if (window.confirm("Apakah Anda yakin ingin menghapus prospek ini?")) {
+            try {
+                await leadsService.delete(leadId);
+                showNotification("Prospek berhasil dihapus.");
+                window.location.reload();
+            } catch (error) {
+                showNotification(`Gagal menghapus prospek: ${error.message}`);
             }
         }
     };
@@ -471,7 +498,10 @@ export const Leads: React.FC<LeadsProps> = ({
         setIsModalOpen(true);
     };
 
-    const handleCloseModal = () => setIsModalOpen(false);
+    const handleCloseModal = () => {
+        if (isLoading) return;
+        setIsModalOpen(false)
+    };
     
     const handleFormChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
         const { name, value, type } = e.target;
@@ -483,55 +513,69 @@ export const Leads: React.FC<LeadsProps> = ({
         }
     };
     
-    const handleSubmit = (e: React.FormEvent) => {
+    const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (modalMode === 'add' || modalMode === 'edit') {
-            const leadData = { ...formData, id: modalMode === 'add' ? `LEAD-${Date.now()}` : selectedLead!.id };
-            if (modalMode === 'add') setLeads(prev => [leadData, ...prev]);
-            else setLeads(prev => prev.map(l => l.id === selectedLead!.id ? leadData : l));
-            showNotification(modalMode === 'add' ? 'Prospek baru berhasil ditambahkan.' : 'Prospek berhasil diperbarui.');
-        } else if (modalMode === 'convert' && selectedLead) {
-            const selectedPackage = packages.find(p => p.id === formData.packageId);
-            if (!selectedPackage) { alert('Harap pilih paket.'); return; }
-            const selectedAddOns = addOns.filter(addon => formData.selectedAddOnIds.includes(addon.id));
-            const totalBeforeDiscount = selectedPackage.price + selectedAddOns.reduce((sum, addon) => sum + addon.price, 0);
-            let finalDiscountAmount = 0;
-            const promoCode = promoCodes.find(p => p.id === formData.promoCodeId);
-            if (promoCode) {
-                if (promoCode.discountType === 'percentage') { finalDiscountAmount = (totalBeforeDiscount * promoCode.discountValue) / 100; } 
-                else { finalDiscountAmount = promoCode.discountValue; }
-            }
-            const totalProject = totalBeforeDiscount - finalDiscountAmount;
-            const dpAmount = Number(formData.dp) || 0;
-            const newClientId = `CLI${Date.now()}`;
-            const newClient: Client = {
-                id: newClientId, name: formData.clientName, email: formData.email, phone: formData.phone, whatsapp: formData.whatsapp,
-                instagram: '', clientType: ClientType.DIRECT, since: new Date().toISOString(), status: ClientStatus.ACTIVE,
-                lastContact: new Date().toISOString(), portalAccessId: crypto.randomUUID(),
-            };
-            setClients(prev => [newClient, ...prev]);
-            const newProject: Project = {
-                id: `PRJ${Date.now()}`, projectName: `Acara ${formData.clientName}`, clientName: formData.clientName, clientId: newClientId,
-                projectType: formData.projectType, packageName: selectedPackage.name, packageId: selectedPackage.id, addOns: selectedAddOns,
-                date: formData.date, location: formData.location, progress: 10, status: 'Dikonfirmasi', totalCost: totalProject,
-                amountPaid: dpAmount, paymentStatus: dpAmount >= totalProject ? PaymentStatus.LUNAS : (dpAmount > 0 ? PaymentStatus.DP_TERBAYAR : PaymentStatus.BELUM_BAYAR),
-                team: [], notes: formData.notes, promoCodeId: formData.promoCodeId || undefined, discountAmount: finalDiscountAmount > 0 ? finalDiscountAmount : undefined,
-            };
-            setProjects(prev => [newProject, ...prev]);
-            if (dpAmount > 0) {
-                 const newTransaction: Transaction = {
-                    id: `TRN-DP-${newProject.id}`, date: new Date().toISOString(), description: `DP Proyek ${newProject.projectName}`,
-                    amount: dpAmount, type: TransactionType.INCOME, projectId: newProject.id, category: 'DP Proyek',
-                    method: 'Transfer Bank', cardId: formData.dpDestinationCardId,
+        setIsLoading(true);
+        try {
+            if (modalMode === 'add') {
+                await leadsService.create({ ...formData, date: new Date().toISOString(), status: LeadStatus.DISCUSSION });
+                showNotification('Prospek baru berhasil ditambahkan.');
+            } else if (modalMode === 'edit' && selectedLead) {
+                await leadsService.update(selectedLead.id, formData);
+                showNotification('Prospek berhasil diperbarui.');
+            } else if (modalMode === 'convert' && selectedLead) {
+                const selectedPackage = packages.find(p => p.id === formData.packageId);
+                if (!selectedPackage) { throw new Error('Harap pilih paket.'); }
+
+                const selectedAddOns = addOns.filter(addon => formData.selectedAddOnIds.includes(addon.id));
+                const totalBeforeDiscount = selectedPackage.price + selectedAddOns.reduce((sum, addon) => sum + addon.price, 0);
+                let finalDiscountAmount = 0;
+                const promoCode = promoCodes.find(p => p.id === formData.promoCodeId);
+                if (promoCode) {
+                    if (promoCode.discountType === 'percentage') { finalDiscountAmount = (totalBeforeDiscount * promoCode.discountValue) / 100; }
+                    else { finalDiscountAmount = promoCode.discountValue; }
+                }
+                const totalProject = totalBeforeDiscount - finalDiscountAmount;
+                const dpAmount = Number(formData.dp) || 0;
+
+                const newClient: Omit<Client, 'id'> = {
+                    name: formData.clientName, email: formData.email, phone: formData.phone, whatsapp: formData.whatsapp,
+                    instagram: formData.instagram || '', clientType: formData.clientType, since: new Date().toISOString(), status: ClientStatus.ACTIVE,
+                    lastContact: new Date().toISOString(), portalAccessId: crypto.randomUUID(),
                 };
-                setTransactions(prev => [...prev, newTransaction].sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
-                setCards(prev => prev.map(c => c.id === formData.dpDestinationCardId ? {...c, balance: c.balance + dpAmount} : c));
+                const createdClient = await clientsService.create(newClient);
+
+                const newProject: Omit<Project, 'id'> = {
+                    projectName: formData.projectName, clientName: createdClient.name, clientId: createdClient.id,
+                    projectType: formData.projectType, packageName: selectedPackage.name, packageId: selectedPackage.id, addOns: selectedAddOns,
+                    date: formData.date, location: formData.location, progress: 10, status: 'Dikonfirmasi', totalCost: totalProject,
+                    amountPaid: dpAmount, paymentStatus: dpAmount >= totalProject ? PaymentStatus.LUNAS : (dpAmount > 0 ? PaymentStatus.DP_TERBAYAR : PaymentStatus.BELUM_BAYAR),
+                    team: [], notes: formData.notes, promoCodeId: formData.promoCodeId || undefined, discountAmount: finalDiscountAmount > 0 ? finalDiscountAmount : undefined,
+                };
+                const createdProject = await projectsService.create(newProject);
+
+                if (dpAmount > 0) {
+                     const newTransaction: Omit<Transaction, 'id'> = {
+                        date: new Date().toISOString(), description: `DP Proyek ${createdProject.projectName}`,
+                        amount: dpAmount, type: TransactionType.INCOME, projectId: createdProject.id, category: 'DP Proyek',
+                        method: 'Transfer Bank', cardId: formData.dpDestinationCardId,
+                    };
+                    await transactionsService.create(newTransaction);
+                    await cardsService.update(formData.dpDestinationCardId, { balance: (cards.find(c => c.id === formData.dpDestinationCardId)?.balance || 0) + dpAmount });
+                }
+                if (promoCode) {
+                    await promoCodesService.update(promoCode.id, { usageCount: promoCode.usageCount + 1 });
+                }
+                await leadsService.update(selectedLead.id, { status: LeadStatus.CONVERTED, notes: `Dikonversi menjadi Klien ID: ${createdClient.id}` });
+                showNotification(`Prospek ${selectedLead.name} berhasil dikonversi menjadi klien!`);
             }
-            if (promoCode) { setPromoCodes(prev => prev.map(p => p.id === promoCode.id ? { ...p, usageCount: p.usageCount + 1 } : p)); }
-            setLeads(prev => prev.map(l => l.id === selectedLead.id ? { ...l, status: LeadStatus.CONVERTED, notes: `Dikonversi menjadi Klien ID: ${newClientId}` } : l));
-            showNotification(`Prospek ${selectedLead.name} berhasil dikonversi menjadi klien!`);
+            handleCloseModal();
+            window.location.reload();
+        } catch (error) {
+            showNotification(`Terjadi kesalahan: ${error.message}`);
+        } finally {
+            setIsLoading(false);
         }
-        handleCloseModal();
     };
 
     const leadColumns = useMemo(() => {
@@ -580,7 +624,7 @@ export const Leads: React.FC<LeadsProps> = ({
                     return (
                         <div key={status} onDragOver={handleDragOver} onDrop={(e) => handleDrop(e, status as LeadStatus)} className="w-80 flex-shrink-0 bg-brand-bg rounded-2xl border border-brand-border flex flex-col">
                             <div className="p-4 font-semibold text-brand-text-light border-b-2 flex justify-between items-center sticky top-0 bg-brand-bg/80 backdrop-blur-sm rounded-t-2xl z-10" style={{ borderColor: statusInfo.color }}><span>{statusInfo.title}</span><span className="text-sm font-normal bg-brand-surface text-brand-text-secondary px-2.5 py-1 rounded-full">{leadItems.length}</span></div>
-                            <div className="p-3 space-y-3 h-[calc(100vh-550px)] overflow-y-auto">{leadItems.map(lead => <LeadCard key={lead.id} lead={lead} onDragStart={handleDragStart} onClick={() => handleOpenModal('edit', lead)} onNextStatus={() => handleNextStatus(lead.id, lead.status)} onShare={(type) => setShareModalState({ type, lead })} />)}</div>
+                            <div className="p-3 space-y-3 h-[calc(100vh-550px)] overflow-y-auto">{leadItems.map(lead => <LeadCard key={lead.id} lead={lead} onDragStart={handleDragStart} onClick={() => handleOpenModal('edit', lead)} onNextStatus={() => handleNextStatus(lead.id, lead.status)} onShare={(type) => setShareModalState({ type, lead })} onDelete={() => handleDelete(lead.id)} />)}</div>
                         </div>
                     );
                 })}
