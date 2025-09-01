@@ -135,25 +135,45 @@ const ProjectStatusManager: React.FC<{
         setForm(prev => ({ ...prev, subStatuses: newSubStatuses }));
     };
 
-    const handleSubmit = (e: React.FormEvent) => {
+    const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
+
+        let newConfig: ProjectStatusConfig[];
         if (modalMode === 'add') {
             const newStatus: ProjectStatusConfig = {
                 id: crypto.randomUUID(),
                 ...form,
                 subStatuses: form.subStatuses.filter(s => s.name.trim() !== '')
             };
-            onConfigChange([...config, newStatus]);
+            newConfig = [...config, newStatus];
         } else if (selectedStatus) {
-            const updatedConfig = config.map(s => 
+            newConfig = config.map(s =>
                 s.id === selectedStatus.id ? { ...s, ...form, subStatuses: form.subStatuses.filter(sub => sub.name.trim() !== '') } : s
             );
-            onConfigChange(updatedConfig);
+        } else {
+            return; // Should not happen
         }
-        handleCloseModal();
+
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) {
+            alert("You must be logged in to perform this action.");
+            return;
+        }
+
+        const { error } = await supabase
+            .from('profiles')
+            .update({ project_status_config: newConfig })
+            .eq('id', user.id);
+
+        if (error) {
+            alert(`Error saving project statuses: ${error.message}`);
+        } else {
+            onConfigChange(newConfig);
+            handleCloseModal();
+        }
     };
 
-    const handleDelete = (statusId: string) => {
+    const handleDelete = async (statusId: string) => {
         const status = config.find(s => s.id === statusId);
         if (!status) return;
 
@@ -164,7 +184,24 @@ const ProjectStatusManager: React.FC<{
         }
 
         if (window.confirm(`Yakin ingin menghapus status "${status.name}"?`)) {
-            onConfigChange(config.filter(s => s.id !== statusId));
+            const newConfig = config.filter(s => s.id !== statusId);
+
+            const { data: { user } } = await supabase.auth.getUser();
+            if (!user) {
+                alert("You must be logged in to perform this action.");
+                return;
+            }
+
+            const { error } = await supabase
+                .from('profiles')
+                .update({ project_status_config: newConfig })
+                .eq('id', user.id);
+
+            if (error) {
+                alert(`Error deleting project status: ${error.message}`);
+            } else {
+                onConfigChange(newConfig);
+            }
         }
     };
 
@@ -453,7 +490,7 @@ const Settings: React.FC<SettingsProps> = ({ profile, setProfile, transactions, 
         });
     };
     
-    const handleUserFormSubmit = (e: React.FormEvent) => {
+    const handleUserFormSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         setUserFormError('');
 
@@ -462,61 +499,77 @@ const Settings: React.FC<SettingsProps> = ({ profile, setProfile, transactions, 
             return;
         }
 
-        if (userModalMode === 'add') {
-            if (!userForm.email || !userForm.password || !userForm.fullName) {
-                setUserFormError('Nama, email, dan kata sandi wajib diisi.');
-                return;
-            }
-            if (users.some(u => u.email === userForm.email)) {
-                setUserFormError('Email sudah digunakan di dalam vendor ini.');
-                return;
-            }
-            if (!currentUser) {
-                setUserFormError('Tidak dapat membuat pengguna: sesi tidak valid.');
-                return;
-            }
-            // FIX: Removed non-existent 'vendorId' property from User object.
-            const newUser: User = {
-                id: crypto.randomUUID(),
-                fullName: userForm.fullName,
-                email: userForm.email,
-                password: userForm.password,
-                role: userForm.role,
-                permissions: userForm.role === 'Member' ? userForm.permissions : undefined,
-            };
-            setUsers(prev => [...prev, newUser]);
-        } else if (userModalMode === 'edit' && selectedUser) {
-            if (users.some(u => u.email === userForm.email && u.id !== selectedUser.id)) {
-                setUserFormError('Email sudah digunakan oleh pengguna lain.');
-                return;
-            }
-            setUsers(prev => prev.map(u => {
-                if (u.id === selectedUser.id) {
-                    const updatedUser: User = {
-                        ...u,
-                        fullName: userForm.fullName,
-                        email: userForm.email,
-                        role: userForm.role,
-                        permissions: userForm.role === 'Member' ? userForm.permissions : undefined,
-                    };
-                    if (userForm.password) {
-                        updatedUser.password = userForm.password;
-                    }
-                    return updatedUser;
+        try {
+            if (userModalMode === 'add') {
+                if (!userForm.email || !userForm.password || !userForm.fullName) {
+                    setUserFormError('Nama, email, dan kata sandi wajib diisi.');
+                    return;
                 }
-                return u;
-            }));
+                if (!currentUser?.vendorId) {
+                    setUserFormError('Tidak dapat membuat pengguna: ID vendor tidak ditemukan.');
+                    return;
+                }
+
+                const { data, error } = await supabase.functions.invoke('create-user', {
+                    body: {
+                        email: userForm.email,
+                        password: userForm.password,
+                        fullName: userForm.fullName,
+                        role: userForm.role,
+                        permissions: userForm.role === 'Member' ? userForm.permissions : null,
+                        vendorId: currentUser.vendorId,
+                    }
+                });
+
+                if (error) throw new Error(error.message);
+                if (data.error) throw new Error(data.error);
+
+                setUsers(prev => [...prev, data.user]);
+
+            } else if (userModalMode === 'edit' && selectedUser) {
+                const payload: any = {
+                    userId: selectedUser.id,
+                    fullName: userForm.fullName,
+                    email: userForm.email,
+                    role: userForm.role,
+                    permissions: userForm.role === 'Member' ? userForm.permissions : null,
+                };
+                if (userForm.password) {
+                    payload.password = userForm.password;
+                }
+
+                const { data, error } = await supabase.functions.invoke('update-user', {
+                    body: payload
+                });
+
+                if (error) throw new Error(error.message);
+                if (data.error) throw new Error(data.error);
+
+                setUsers(prev => prev.map(u => u.id === selectedUser.id ? data.user : u));
+            }
+            handleCloseUserModal();
+        } catch (error) {
+            setUserFormError(`Gagal menyimpan pengguna: ${error.message}`);
         }
-        handleCloseUserModal();
     };
 
-    const handleDeleteUser = (userId: string) => {
+    const handleDeleteUser = async (userId: string) => {
         if (userId === currentUser?.id) {
             alert("Anda tidak dapat menghapus akun Anda sendiri.");
             return;
         }
-        if (window.confirm("Apakah Anda yakin ingin menghapus pengguna ini?")) {
-            setUsers(prev => prev.filter(u => u.id !== userId));
+        if (window.confirm("Apakah Anda yakin ingin menghapus pengguna ini? Aksi ini tidak dapat dibatalkan.")) {
+            try {
+                const { error } = await supabase.functions.invoke('delete-user', {
+                    body: { userId }
+                });
+
+                if (error) throw new Error(error.message);
+
+                setUsers(prev => prev.filter(u => u.id !== userId));
+            } catch (error) {
+                alert(`Gagal menghapus pengguna: ${error.message}`);
+            }
         }
     };
     

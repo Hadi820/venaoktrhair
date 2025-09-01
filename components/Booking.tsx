@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { Lead, Client, Project, Package, ViewType, NavigationAction, Profile, BookingStatus } from '../types';
+import { projectsService } from '../services/supabaseService';
 import PageHeader from './PageHeader';
 import StatCard from './StatCard';
 import Modal from './Modal';
@@ -298,14 +299,15 @@ const Booking: React.FC<BookingProps> = ({ leads, clients, projects, setProjects
         }
     }, [activeStatModal, allBookings, newBookings, mostPopularPackage]);
 
-    const handleStatusChange = (projectId: string, newStatus: BookingStatus) => {
-        setProjects(prev => prev.map(p => {
-            if (p.id === projectId) {
-                return { ...p, bookingStatus: newStatus };
-            }
-            return p;
-        }));
-        showNotification(`Booking berhasil ${newStatus === BookingStatus.TERKONFIRMASI ? 'dikonfirmasi' : 'ditolak'}.`);
+    const handleStatusChange = async (projectId: string, newStatus: BookingStatus) => {
+        try {
+            await projectsService.update(projectId, { booking_status: newStatus });
+            showNotification(`Booking berhasil ${newStatus === BookingStatus.TERKONFIRMASI ? 'dikonfirmasi' : 'ditolak'}.`);
+            window.location.reload();
+        } catch (error) {
+            console.error("Error updating booking status:", error);
+            showNotification(`Gagal memperbarui status booking: ${error.message}`);
+        }
     };
 
     return (

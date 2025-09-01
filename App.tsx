@@ -725,8 +725,6 @@ const App: React.FC = () => {
           handleNavigation={handleNavigation}
           clientFeedback={clientFeedback}
           promoCodes={promoCodes} setPromoCodes={setPromoCodes}
-          onSignInvoice={(pId, sig) => setProjects(prev => prev.map(p => p.id === pId ? { ...p, invoiceSignature: sig } : p))}
-          onSignTransaction={(tId, sig) => setTransactionsSync(prev => prev.map(t => t.id === tId ? { ...t, vendorSignature: sig } : t))}
           addNotification={addNotification}
         />;
       case ViewType.PROJECTS:
