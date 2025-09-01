@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { TeamMember, TeamProjectPayment, Profile, Transaction, TransactionType, TeamPaymentRecord, Project, RewardLedgerEntry, Card, FinancialPocket, PocketType, PerformanceNoteType, PerformanceNote, NavigationAction, CardType } from '../types';
+import { teamMembersService, transactionsService, cardsService, financialPocketsService, teamPaymentRecordsService, rewardLedgerEntriesService } from '../services/supabaseService';
 import PageHeader from './PageHeader';
 import Modal from './Modal';
 import FreelancerProjects from './FreelancerProjects';
@@ -428,33 +429,43 @@ export const Freelancers: React.FC<FreelancersProps> = ({
         setFormData(prev => ({ ...prev, [name]: name === 'standardFee' ? Number(value) : value }));
     };
 
-    const handleSubmit = (e: React.FormEvent) => {
+    const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (formMode === 'add') {
-            const newMember: TeamMember = {
-                ...formData,
-                id: `TM${Date.now()}`,
-                rewardBalance: 0,
-                rating: 0,
-                performanceNotes: [],
-                portalAccessId: crypto.randomUUID(),
-            };
-            setTeamMembers(prev => [...prev, newMember]);
-            showNotification(`Freelancer ${newMember.name} berhasil ditambahkan.`);
-        } else if (selectedMember) {
-            setTeamMembers(prev => prev.map(m => m.id === selectedMember.id ? { ...selectedMember, ...formData } : m));
-            showNotification(`Data ${formData.name} berhasil diperbarui.`);
+        try {
+            if (formMode === 'add') {
+                const newMemberData = {
+                    ...formData,
+                    reward_balance: 0,
+                    rating: 0,
+                    performance_notes: [],
+                    portal_access_id: crypto.randomUUID(),
+                };
+                await teamMembersService.create(newMemberData);
+                showNotification(`Freelancer ${formData.name} berhasil ditambahkan.`);
+            } else if (selectedMember) {
+                await teamMembersService.update(selectedMember.id, formData);
+                showNotification(`Data ${formData.name} berhasil diperbarui.`);
+            }
+            setIsFormOpen(false);
+            window.location.reload();
+        } catch (error) {
+            showNotification(`Gagal menyimpan data freelancer: ${error.message}`);
         }
-        setIsFormOpen(false);
     };
     
-    const handleDelete = (memberId: string) => {
+    const handleDelete = async (memberId: string) => {
         if (teamProjectPayments.some(p => p.teamMemberId === memberId && p.status === 'Unpaid')) {
             alert("Freelancer ini memiliki pembayaran yang belum lunas dan tidak dapat dihapus.");
             return;
         }
         if (window.confirm("Apakah Anda yakin ingin menghapus freelancer ini?")) {
-            setTeamMembers(prev => prev.filter(m => m.id !== memberId));
+            try {
+                await teamMembersService.delete(memberId);
+                showNotification("Freelancer berhasil dihapus.");
+                window.location.reload();
+            } catch (error) {
+                showNotification(`Gagal menghapus freelancer: ${error.message}`);
+            }
         }
     };
     
@@ -481,68 +492,76 @@ export const Freelancers: React.FC<FreelancersProps> = ({
         setDetailTab('create-payment');
     };
 
-    const handlePay = () => {
+    const handlePay = async () => {
         if (!selectedMember || !paymentAmount || paymentAmount <= 0 || !paymentSourceId) {
             alert('Harap isi jumlah dan pilih sumber dana.');
             return;
         }
         
-        // 1. Create Transaction
-        const newTransaction: Transaction = {
-            id: `TRN-PAY-FR-${Date.now()}`,
-            date: new Date().toISOString().split('T')[0],
-            description: `Pembayaran Gaji Freelancer: ${selectedMember.name} (${projectsToPay.length} proyek)`,
-            amount: paymentAmount,
-            type: TransactionType.EXPENSE,
-            category: 'Gaji Freelancer',
-            method: 'Transfer Bank', // Placeholder, will be overwritten
-        };
-        
-        // 2. Update Card/Pocket Balance
-        if (paymentSourceId.startsWith('card-')) {
-            const cardId = paymentSourceId.replace('card-', '');
-            const card = cards.find(c => c.id === cardId);
-            if (!card || card.balance < paymentAmount) {
-                alert(`Saldo di kartu ${card?.bankName} tidak mencukupi.`); return;
+        try {
+            // 1. Create Transaction
+            const newTransactionData: Omit<Transaction, 'id' | 'created_at' | 'updated_at'> = {
+                date: new Date().toISOString().split('T')[0],
+                description: `Pembayaran Gaji Freelancer: ${selectedMember.name} (${projectsToPay.length} proyek)`,
+                amount: paymentAmount,
+                type: TransactionType.EXPENSE,
+                category: 'Gaji Freelancer',
+                method: 'Transfer Bank', // Placeholder
+            };
+
+            // 2. Update Card/Pocket Balance
+            if (paymentSourceId.startsWith('card-')) {
+                const cardId = paymentSourceId.replace('card-', '');
+                const card = cards.find(c => c.id === cardId);
+                if (!card || card.balance < paymentAmount) {
+                    alert(`Saldo di kartu ${card?.bankName} tidak mencukupi.`); return;
+                }
+                newTransactionData.cardId = cardId;
+                newTransactionData.method = card.cardType === CardType.TUNAI ? 'Tunai' : 'Kartu';
+                await cardsService.update(cardId, { balance: card.balance - paymentAmount });
+            } else { // pocket
+                const pocketId = paymentSourceId.replace('pocket-', '');
+                const pocket = pockets.find(p => p.id === pocketId);
+                if (!pocket || pocket.amount < paymentAmount) {
+                    alert(`Saldo di kantong ${pocket?.name} tidak mencukupi.`); return;
+                }
+                newTransactionData.pocketId = pocketId;
+                newTransactionData.method = 'Sistem';
+                await financialPocketsService.update(pocketId, { amount: pocket.amount - paymentAmount });
             }
-            newTransaction.cardId = cardId;
-            newTransaction.method = card.cardType === CardType.TUNAI ? 'Tunai' : 'Kartu';
-            setCards(prev => prev.map(c => c.id === cardId ? {...c, balance: c.balance - paymentAmount} : c));
-        } else { // pocket
-            const pocketId = paymentSourceId.replace('pocket-', '');
-            const pocket = pockets.find(p => p.id === pocketId);
-            if (!pocket || pocket.amount < paymentAmount) {
-                alert(`Saldo di kantong ${pocket?.name} tidak mencukupi.`); return;
-            }
-            newTransaction.pocketId = pocketId;
-            newTransaction.method = 'Sistem';
-            setPockets(prev => prev.map(p => p.id === pocketId ? { ...p, amount: p.amount - paymentAmount } : p));
+
+            const createdTransaction = await transactionsService.create(newTransactionData);
+
+            // 3. Create Payment Record
+            const newRecordData: Omit<TeamPaymentRecord, 'id' | 'created_at' | 'updated_at'> = {
+                recordNumber: `PAY-FR-${selectedMember.id.slice(-4)}-${Date.now()}`,
+                teamMemberId: selectedMember.id,
+                date: new Date().toISOString().split('T')[0],
+                projectPaymentIds: projectsToPay,
+                totalAmount: paymentAmount,
+                transactionId: createdTransaction.id,
+            };
+            await teamPaymentRecordsService.create(newRecordData);
+
+            // 4. Update Project Payment Status
+            const paymentUpdates = projectsToPay.map(paymentId =>
+                teamProjectPaymentsService.update(paymentId, { status: 'Paid' })
+            );
+            await Promise.all(paymentUpdates);
+
+            showNotification(`Pembayaran untuk ${selectedMember.name} sebesar ${formatCurrency(paymentAmount)} berhasil dicatat.`);
+
+            setProjectsToPay([]);
+            setPaymentAmount('');
+            setIsDetailOpen(false);
+            window.location.reload();
+
+        } catch (error) {
+            showNotification(`Gagal mencatat pembayaran: ${error.message}`);
         }
-        
-        // 3. Create Payment Record
-        const newRecord: TeamPaymentRecord = {
-            id: `TPR${Date.now()}`,
-            recordNumber: `PAY-FR-${selectedMember.id.slice(-4)}-${Date.now()}`,
-            teamMemberId: selectedMember.id,
-            date: new Date().toISOString().split('T')[0],
-            projectPaymentIds: projectsToPay,
-            totalAmount: paymentAmount
-        };
-
-        // 4. Update Project Payment Status
-        setTeamProjectPayments(prev => prev.map(p => projectsToPay.includes(p.id) ? { ...p, status: 'Paid' } : p));
-        
-        setTransactions(prev => [...prev, newTransaction].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
-        setTeamPaymentRecords(prev => [...prev, newRecord]);
-
-        showNotification(`Pembayaran untuk ${selectedMember.name} sebesar ${formatCurrency(paymentAmount)} berhasil dicatat.`);
-        
-        setProjectsToPay([]);
-        setPaymentAmount('');
-        setIsDetailOpen(false);
     };
 
-    const handleWithdrawRewards = () => {
+    const handleWithdrawRewards = async () => {
         if (!selectedMember || selectedMember.rewardBalance <= 0) return;
 
         if (window.confirm(`Anda akan menarik saldo hadiah sebesar ${formatCurrency(selectedMember.rewardBalance)} untuk ${selectedMember.name}. Lanjutkan?`)) {
@@ -553,40 +572,41 @@ export const Freelancers: React.FC<FreelancersProps> = ({
                 return;
             }
 
-            // 1. Create transaction for the withdrawal
-            const withdrawalTx: Transaction = {
-                id: `TRN-RWD-WTH-${Date.now()}`,
-                date: new Date().toISOString().split('T')[0],
-                description: `Penarikan saldo hadiah oleh ${selectedMember.name}`,
-                amount: withdrawalAmount,
-                type: TransactionType.EXPENSE,
-                category: 'Penarikan Hadiah Freelancer',
-                method: 'Transfer Bank',
-                cardId: sourceCard.id,
-            };
+            try {
+                const withdrawalTxData: Omit<Transaction, 'id' | 'created_at' | 'updated_at'> = {
+                    date: new Date().toISOString().split('T')[0],
+                    description: `Penarikan saldo hadiah oleh ${selectedMember.name}`,
+                    amount: withdrawalAmount,
+                    type: TransactionType.EXPENSE,
+                    category: 'Penarikan Hadiah Freelancer',
+                    method: 'Transfer Bank',
+                    cardId: sourceCard.id,
+                };
+                const createdTransaction = await transactionsService.create(withdrawalTxData);
 
-            // 2. Create a negative entry in the reward ledger
-            const ledgerEntry: RewardLedgerEntry = {
-                id: `RLE-${withdrawalTx.id}`,
-                teamMemberId: selectedMember.id,
-                date: withdrawalTx.date,
-                description: withdrawalTx.description,
-                amount: -withdrawalAmount,
-            };
+                const ledgerEntryData: Omit<RewardLedgerEntry, 'id' | 'created_at' | 'updated_at'> = {
+                    teamMemberId: selectedMember.id,
+                    date: createdTransaction.date,
+                    description: createdTransaction.description,
+                    amount: -withdrawalAmount,
+                    transactionId: createdTransaction.id,
+                };
+                await rewardLedgerEntriesService.create(ledgerEntryData);
 
-            // 3. Update states
-            setTransactions(prev => [...prev, withdrawalTx].sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
-            setRewardLedgerEntries(prev => [...prev, ledgerEntry].sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
-            setCards(prev => prev.map(c => c.id === sourceCard.id ? { ...c, balance: c.balance - withdrawalAmount } : c));
-            setTeamMembers(prev => prev.map(m => m.id === selectedMember.id ? { ...m, rewardBalance: 0 } : m));
-            
-            const rewardPocket = pockets.find(p => p.type === PocketType.REWARD_POOL);
-            if (rewardPocket) {
-                setPockets(prev => prev.map(p => p.id === rewardPocket.id ? { ...p, amount: p.amount - withdrawalAmount } : p));
+                await cardsService.update(sourceCard.id, { balance: sourceCard.balance - withdrawalAmount });
+                await teamMembersService.update(selectedMember.id, { reward_balance: 0 });
+
+                const rewardPocket = pockets.find(p => p.type === PocketType.REWARD_POOL);
+                if (rewardPocket) {
+                    await financialPocketsService.update(rewardPocket.id, { amount: rewardPocket.amount - withdrawalAmount });
+                }
+
+                showNotification(`Penarikan hadiah untuk ${selectedMember.name} berhasil.`);
+                setIsDetailOpen(false);
+                window.location.reload();
+            } catch (error) {
+                showNotification(`Gagal menarik hadiah: ${error.message}`);
             }
-
-            showNotification(`Penarikan hadiah untuk ${selectedMember.name} berhasil.`);
-            setIsDetailOpen(false);
         }
     };
 
@@ -596,14 +616,20 @@ export const Freelancers: React.FC<FreelancersProps> = ({
     }, [teamProjectPayments, selectedMember]);
     
     // Performance Tab Handlers
-    const handleSetRating = (rating: number) => {
+    const handleSetRating = async (rating: number) => {
         if (!selectedMember) return;
-        setTeamMembers(prev => prev.map(m => m.id === selectedMember.id ? { ...m, rating } : m));
-        // Also update the selectedMember state to reflect change in the modal
-        setSelectedMember(prev => prev ? { ...prev, rating } : null);
+        try {
+            await teamMembersService.update(selectedMember.id, { rating });
+            const updatedMember = { ...selectedMember, rating };
+            setTeamMembers(prev => prev.map(m => m.id === selectedMember.id ? updatedMember : m));
+            setSelectedMember(updatedMember);
+            showNotification('Rating berhasil diperbarui.');
+        } catch (error) {
+            showNotification(`Gagal memperbarui rating: ${error.message}`);
+        }
     };
 
-    const handleAddNote = () => {
+    const handleAddNote = async () => {
         if (!selectedMember || !newNote.trim()) return;
         const note: PerformanceNote = {
             id: `PN-${Date.now()}`,
@@ -612,27 +638,50 @@ export const Freelancers: React.FC<FreelancersProps> = ({
             type: newNoteType
         };
         const updatedNotes = [...selectedMember.performanceNotes, note];
-        setTeamMembers(prev => prev.map(m => m.id === selectedMember.id ? { ...m, performanceNotes: updatedNotes } : m));
-        setSelectedMember(prev => prev ? { ...prev, performanceNotes: updatedNotes } : null);
-        setNewNote('');
-        setNewNoteType(PerformanceNoteType.GENERAL);
+        try {
+            await teamMembersService.update(selectedMember.id, { performance_notes: updatedNotes });
+            const updatedMember = { ...selectedMember, performanceNotes: updatedNotes };
+            setTeamMembers(prev => prev.map(m => m.id === selectedMember.id ? updatedMember : m));
+            setSelectedMember(updatedMember);
+            setNewNote('');
+            setNewNoteType(PerformanceNoteType.GENERAL);
+            showNotification('Catatan kinerja berhasil ditambahkan.');
+        } catch(error) {
+            showNotification(`Gagal menambahkan catatan: ${error.message}`);
+        }
     };
 
-    const handleDeleteNote = (noteId: string) => {
+    const handleDeleteNote = async (noteId: string) => {
         if (!selectedMember) return;
         const updatedNotes = selectedMember.performanceNotes.filter(n => n.id !== noteId);
-        setTeamMembers(prev => prev.map(m => m.id === selectedMember.id ? { ...m, performanceNotes: updatedNotes } : m));
-        setSelectedMember(prev => prev ? { ...prev, performanceNotes: updatedNotes } : null);
+        try {
+            await teamMembersService.update(selectedMember.id, { performance_notes: updatedNotes });
+            const updatedMember = { ...selectedMember, performanceNotes: updatedNotes };
+            setTeamMembers(prev => prev.map(m => m.id === selectedMember.id ? updatedMember : m));
+            setSelectedMember(updatedMember);
+            showNotification('Catatan kinerja berhasil dihapus.');
+        } catch(error) {
+            showNotification(`Gagal menghapus catatan: ${error.message}`);
+        }
     };
 
     const monthlyBudgetPocket = useMemo(() => pockets.find(p => p.type === PocketType.EXPENSE), [pockets]);
 
-    const handleSaveSignature = (signatureDataUrl: string) => {
+    const handleSaveSignature = async (signatureDataUrl: string) => {
         if (paymentSlipToView) {
-            onSignPaymentRecord(paymentSlipToView.id, signatureDataUrl);
-            setPaymentSlipToView(prev => prev ? { ...prev, vendorSignature: signatureDataUrl } : null);
+            try {
+                await teamPaymentRecordsService.update(paymentSlipToView.id, { vendor_signature: signatureDataUrl });
+                setPaymentSlipToView(prev => prev ? { ...prev, vendorSignature: signatureDataUrl } : null);
+                // Also update the main records list for next time modal is opened
+                setTeamPaymentRecords(prev => prev.map(r => r.id === paymentSlipToView.id ? { ...r, vendorSignature: signatureDataUrl } : r));
+                showNotification('Tanda tangan berhasil disimpan.');
+                setIsSignatureModalOpen(false);
+            } catch (error) {
+                showNotification(`Gagal menyimpan tanda tangan: ${error.message}`);
+            }
+        } else {
+            setIsSignatureModalOpen(false);
         }
-        setIsSignatureModalOpen(false);
     };
     
     const renderPaymentSlipBody = (record: TeamPaymentRecord) => {

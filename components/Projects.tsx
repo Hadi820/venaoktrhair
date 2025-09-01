@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { Project, PaymentStatus, TeamMember, Client, Package, TeamProjectPayment, Transaction, TransactionType, AssignedTeamMember, Profile, Revision, RevisionStatus, NavigationAction, AddOn, PrintingItem, Card, ProjectStatusConfig, SubStatusConfig } from '../types';
+import { projectsService, teamProjectPaymentsService, transactionsService } from '../services/supabaseService';
 import PageHeader from './PageHeader';
 import Modal from './Modal';
 import StatCard from './StatCard';
@@ -605,7 +606,7 @@ const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({ selectedProject
         }, {} as Record<string, AssignedTeamMember[]>);
     }, [selectedProject?.team]);
 
-    const handleAddRevision = (e: React.FormEvent) => {
+    const handleAddRevision = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!selectedProject || !newRevision.freelancerId || !newRevision.adminNotes || !newRevision.deadline) {
             showNotification('Harap lengkapi semua field revisi.');
@@ -621,13 +622,19 @@ const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({ selectedProject
             status: RevisionStatus.PENDING,
         };
         
-        const updatedProject = { ...selectedProject, revisions: [...(selectedProject.revisions || []), revisionToAdd] };
+        const updatedRevisions = [...(selectedProject.revisions || []), revisionToAdd];
 
-        setProjects(prevProjects => prevProjects.map(p => p.id === selectedProject.id ? updatedProject : p));
-        setSelectedProject(updatedProject);
+        try {
+            await projectsService.update(selectedProject.id, { revisions: updatedRevisions });
+            showNotification('Revisi baru berhasil ditambahkan.');
+            setNewRevision({ adminNotes: '', deadline: '', freelancerId: '' });
 
-        showNotification('Revisi baru berhasil ditambahkan.');
-        setNewRevision({ adminNotes: '', deadline: '', freelancerId: '' });
+            const updatedProject = { ...selectedProject, revisions: updatedRevisions };
+            setProjects(prevProjects => prevProjects.map(p => p.id === selectedProject.id ? updatedProject : p));
+            setSelectedProject(updatedProject);
+        } catch (error) {
+            showNotification(`Gagal menambahkan revisi: ${error.message}`);
+        }
     };
 
     const handleShareRevisionLink = (revision: Revision) => {
@@ -648,7 +655,7 @@ const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({ selectedProject
         });
     };
     
-    const handleToggleDigitalItem = (itemText: string) => {
+    const handleToggleDigitalItem = async (itemText: string) => {
         if (!selectedProject) return;
 
         const currentCompleted = selectedProject.completedDigitalItems || [];
@@ -657,10 +664,14 @@ const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({ selectedProject
             ? currentCompleted.filter(item => item !== itemText)
             : [...currentCompleted, itemText];
 
-        const updatedProject = { ...selectedProject, completedDigitalItems: newCompleted };
-
-        setProjects(prevProjects => prevProjects.map(p => p.id === selectedProject.id ? updatedProject : p));
-        setSelectedProject(updatedProject); // Update local state for immediate UI feedback in the modal
+        try {
+            await projectsService.update(selectedProject.id, { completed_digital_items: newCompleted });
+            const updatedProject = { ...selectedProject, completedDigitalItems: newCompleted };
+            setProjects(prevProjects => prevProjects.map(p => p.id === selectedProject.id ? updatedProject : p));
+            setSelectedProject(updatedProject);
+        } catch (error) {
+            showNotification(`Gagal memperbarui status item: ${error.message}`);
+        }
     };
     
     if (!selectedProject) return null;
@@ -1040,7 +1051,7 @@ Salam hangat,
 
     }, [recipientId, project, subStatus, client, isFollowUp]);
 
-    const handleShare = () => {
+    const handleShare = async () => {
         let phoneNumber = '';
         if (recipientId.startsWith('client-') && client) {
             phoneNumber = client.phone;
@@ -1050,23 +1061,31 @@ Salam hangat,
         }
 
         if (phoneNumber) {
-            // Update project state with the timestamp
-            setProjects(prev => prev.map(p => {
-                if (p.id === project.id) {
-                    const newConfirmationSentAt = {
-                        ...(p.subStatusConfirmationSentAt || {}),
-                        [subStatus.name]: new Date().toISOString(),
-                    };
-                    return { ...p, subStatusConfirmationSentAt: newConfirmationSentAt };
-                }
-                return p;
-            }));
+            const newConfirmationSentAt = {
+                ...(project.subStatusConfirmationSentAt || {}),
+                [subStatus.name]: new Date().toISOString(),
+            };
 
-            // Open WhatsApp
-            const cleanedNumber = phoneNumber.replace(/[^0-9]/g, '');
-            const whatsappUrl = `https://wa.me/${cleanedNumber}?text=${encodeURIComponent(message)}`;
-            window.open(whatsappUrl, '_blank');
-            onClose(); // Close modal after sharing
+            try {
+                // Persist the change to Supabase
+                await projectsService.update(project.id, { sub_status_confirmation_sent_at: newConfirmationSentAt });
+
+                // Update local state
+                setProjects(prev => prev.map(p => {
+                    if (p.id === project.id) {
+                        return { ...p, subStatusConfirmationSentAt: newConfirmationSentAt };
+                    }
+                    return p;
+                }));
+
+                // Open WhatsApp
+                const cleanedNumber = phoneNumber.replace(/[^0-9]/g, '');
+                const whatsappUrl = `https://wa.me/${cleanedNumber}?text=${encodeURIComponent(message)}`;
+                window.open(whatsappUrl, '_blank');
+                onClose();
+            } catch (error) {
+                alert(`Gagal menyimpan status konfirmasi: ${(error as Error).message}`);
+            }
         } else {
             alert('Nomor telepon untuk penerima ini tidak ditemukan.');
         }
@@ -1392,100 +1411,134 @@ export const Projects: React.FC<ProjectsProps> = ({ projects, setProjects, clien
         }));
     };
 
-    const handleFormSubmit = (e: React.FormEvent) => {
+    const handleFormSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         
-        let projectData: Project;
+        if (formMode !== 'edit') {
+            showNotification("Mode tidak valid. Hanya mode edit yang didukung di halaman ini.");
+            return;
+        }
 
-        if (formMode === 'add') {
-             projectData = {
-                ...initialFormState,
-                ...formData,
-                id: `PRJ${Date.now()}`,
-                progress: 0,
-                totalCost: 0, // Will be set on client page
-                amountPaid: 0,
-                paymentStatus: PaymentStatus.BELUM_BAYAR,
-                packageId: '',
-                addOns: [],
+        const originalProject = projects.find(p => p.id === formData.id);
+        if (!originalProject) {
+            showNotification("Error: Proyek asli tidak ditemukan.");
+            return;
+        }
+
+        try {
+            // NOTE: This is not a true database transaction. If one of the later calls fails,
+            // the earlier ones will not be rolled back. A more robust solution would use a
+            // single RPC call to a database function.
+
+            // 1. Update the main project data
+            const projectUpdateData = {
+                project_name: formData.projectName,
+                project_type: formData.projectType,
+                status: formData.status,
+                active_sub_statuses: formData.activeSubStatuses,
+                custom_sub_statuses: formData.customSubStatuses,
+                location: formData.location,
+                date: formData.date,
+                deadline_date: formData.deadlineDate,
+                start_time: formData.startTime,
+                end_time: formData.endTime,
+                team: formData.team,
+                notes: formData.notes,
+                drive_link: formData.driveLink,
+                client_drive_link: formData.clientDriveLink,
+                final_drive_link: formData.finalDriveLink,
+                shipping_details: formData.shippingDetails,
+                printing_cost: formData.printingCost,
+                transport_cost: formData.transportCost,
+                is_editing_confirmed_by_client: formData.isEditingConfirmedByClient,
+                is_printing_confirmed_by_client: formData.isPrintingConfirmedByClient,
+                is_delivery_confirmed_by_client: formData.isDeliveryConfirmedByClient,
             };
-        } else { // edit mode
-            const originalProject = projects.find(p => p.id === formData.id);
-            if (!originalProject) return; 
-            projectData = { ...originalProject, ...formData };
-            
-            const paymentCardId = cards.find(c => c.id !== 'CARD_CASH')?.id;
-            if (!paymentCardId) {
-                showNotification("Tidak ada kartu pembayaran untuk mencatat pengeluaran.");
-            } else {
-                let tempTransactions = [...transactions];
-                let tempCards = [...cards];
-                const fieldsToProcess: ('printingCost' | 'transportCost')[] = [];
+            await projectsService.update(originalProject.id, projectUpdateData);
 
-                if (originalProject.printingCost !== projectData.printingCost) fieldsToProcess.push('printingCost');
-                if (originalProject.transportCost !== projectData.transportCost) fieldsToProcess.push('transportCost');
+            // 2. Sync Team Project Payments
+            const existingPayments = await teamProjectPaymentsService.getByProjectId(originalProject.id);
+            const newTeamIds = new Set(formData.team.map((t: AssignedTeamMember) => t.memberId));
+            const existingPaymentIds = new Set(existingPayments.map(p => p.teamMemberId));
 
-                fieldsToProcess.forEach(field => {
-                    const cost = projectData[field] || 0;
-                    const category = field === 'printingCost' ? 'Cetak Album' : 'Transportasi';
-                    const description = field === 'printingCost' ? `Biaya Cetak - ${projectData.projectName}` : `Biaya Transportasi - ${projectData.projectName}`;
-                    const txId = `TRN-COST-${field.replace('Cost','')}-${projectData.id}`;
-                    
-                    const existingTxIndex = tempTransactions.findIndex(t => t.id === txId);
-
-                    if (existingTxIndex > -1) {
-                        const oldAmount = tempTransactions[existingTxIndex].amount;
-                        if (cost > 0) {
-                            tempTransactions[existingTxIndex].amount = cost;
-                            const diff = cost - oldAmount;
-                            tempCards = tempCards.map(c => c.id === paymentCardId ? { ...c, balance: c.balance - diff } : c);
-                        } else {
-                            tempTransactions.splice(existingTxIndex, 1);
-                            tempCards = tempCards.map(c => c.id === paymentCardId ? { ...c, balance: c.balance + oldAmount } : c);
-                        }
-                    } else if (cost > 0) {
-                        const newTx: Transaction = {
-                            id: txId, date: new Date().toISOString().split('T')[0], description, amount: cost,
-                            type: TransactionType.EXPENSE, projectId: projectData.id, category,
-                            method: 'Sistem', cardId: paymentCardId,
-                        };
-                        tempTransactions.push(newTx);
-                        tempCards = tempCards.map(c => c.id === paymentCardId ? { ...c, balance: c.balance - cost } : c);
-                    }
-                });
-
-                setTransactions(tempTransactions.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
-                setCards(tempCards);
+            // Delete payments for removed members
+            for (const payment of existingPayments) {
+                if (!newTeamIds.has(payment.teamMemberId)) {
+                    await teamProjectPaymentsService.delete(payment.id);
+                }
             }
-        }
-        
-        const allTeamMembersOnProject = projectData.team;
-        const otherProjectPayments = teamProjectPayments.filter(p => p.projectId !== projectData.id);
-        const newProjectPaymentEntries: TeamProjectPayment[] = allTeamMembersOnProject.map(teamMember => ({
-            id: `TPP-${projectData.id}-${teamMember.memberId}`,
-            projectId: projectData.id,
-            teamMemberName: teamMember.name,
-            teamMemberId: teamMember.memberId,
-            date: projectData.date,
-            status: 'Unpaid',
-            fee: teamMember.fee,
-            reward: teamMember.reward || 0,
-        }));
-        setTeamProjectPayments([...otherProjectPayments, ...newProjectPaymentEntries]);
+            // Add/Update payments for current members
+            for (const teamMember of formData.team) {
+                const existingPayment = existingPayments.find(p => p.teamMemberId === teamMember.memberId);
+                if (existingPayment) {
+                    // Update if fee or reward changed
+                    if (existingPayment.fee !== teamMember.fee || existingPayment.reward !== (teamMember.reward || 0)) {
+                        await teamProjectPaymentsService.update(existingPayment.id, { fee: teamMember.fee, reward: teamMember.reward || 0 });
+                    }
+                } else {
+                    // Create for new member
+                    await teamProjectPaymentsService.create({
+                        projectId: originalProject.id,
+                        teamMemberId: teamMember.memberId,
+                        teamMemberName: teamMember.name,
+                        date: originalProject.date,
+                        fee: teamMember.fee,
+                        reward: teamMember.reward || 0,
+                        status: 'Unpaid',
+                    });
+                }
+            }
 
-        if (formMode === 'add') {
-            setProjects(prev => [projectData, ...prev].sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
-        } else {
-            setProjects(prev => prev.map(p => p.id === projectData.id ? projectData : p).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
+            // 3. Sync Cost Transactions
+            const paymentCardId = cards.find(c => c.id !== 'CARD_CASH')?.id;
+            if (paymentCardId) {
+                const costFields: ('printingCost' | 'transportCost')[] = ['printingCost', 'transportCost'];
+                for (const field of costFields) {
+                    const newCost = formData[field] || 0;
+                    const oldCost = originalProject[field] || 0;
+                    const txId = `TRN-COST-${field.replace('Cost','')}-${originalProject.id}`;
+                    const existingTx = transactions.find(t => t.id === txId);
+
+                    if (newCost !== oldCost) {
+                        if (newCost > 0 && existingTx) { // Cost updated
+                            await transactionsService.update(txId, { amount: newCost });
+                        } else if (newCost > 0 && !existingTx) { // Cost added
+                             await transactionsService.create({
+                                id: txId, date: new Date().toISOString().split('T')[0],
+                                description: `${field === 'printingCost' ? 'Biaya Cetak' : 'Biaya Transportasi'} - ${formData.projectName}`,
+                                amount: newCost, type: TransactionType.EXPENSE, projectId: originalProject.id,
+                                category: field === 'printingCost' ? 'Cetak Album' : 'Transportasi',
+                                method: 'Sistem', cardId: paymentCardId,
+                            });
+                        } else if (newCost === 0 && existingTx) { // Cost removed
+                            await transactionsService.delete(txId);
+                        }
+                    }
+                }
+            }
+
+            showNotification('Proyek berhasil diperbarui beserta detailnya.');
+            handleCloseForm();
+            window.location.reload();
+
+        } catch (error) {
+            console.error("Error updating project:", error);
+            showNotification(`Gagal memperbarui proyek: ${error.message}`);
         }
-        handleCloseForm();
     };
 
-    const handleProjectDelete = (projectId: string) => {
+    const handleProjectDelete = async (projectId: string) => {
         if (window.confirm("Apakah Anda yakin ingin menghapus proyek ini? Semua data terkait (termasuk tugas tim dan transaksi) akan dihapus.")) {
-            setProjects(prev => prev.filter(p => p.id !== projectId));
-            setTeamProjectPayments(prev => prev.filter(fp => fp.projectId !== projectId));
-            setTransactions(prev => prev.filter(t => t.projectId !== projectId));
+            try {
+                // Assuming cascading delete is set up in the database.
+                // If not, we would need to manually delete related transactions and team payments first.
+                await projectsService.delete(projectId);
+                showNotification("Proyek berhasil dihapus.");
+                window.location.reload();
+            } catch (error) {
+                console.error("Error deleting project:", error);
+                showNotification(`Gagal menghapus proyek: ${error.message}`);
+            }
         }
     };
     
@@ -1610,18 +1663,24 @@ export const Projects: React.FC<ProjectsProps> = ({ projects, setProjects, clien
         e.preventDefault();
     };
 
-    const handleDrop = (e: React.DragEvent<HTMLDivElement>, newStatus: string) => {
+    const handleDrop = async (e: React.DragEvent<HTMLDivElement>, newStatus: string) => {
         e.preventDefault();
         const projectId = e.dataTransfer.getData("projectId");
         const projectToUpdate = projects.find(p => p.id === projectId);
 
         if (projectToUpdate && projectToUpdate.status !== newStatus) {
-            setProjects(prevProjects =>
-                prevProjects.map(p =>
-                    p.id === projectId ? { ...p, status: newStatus, progress: getProgressForStatus(newStatus, profile.projectStatusConfig), activeSubStatuses: [] } : p
-                )
-            );
-            showNotification(`Status "${projectToUpdate.projectName}" diubah ke "${newStatus}"`);
+            try {
+                await projectsService.update(projectId, {
+                    status: newStatus,
+                    progress: getProgressForStatus(newStatus, profile.projectStatusConfig),
+                    active_sub_statuses: [] // Reset sub-statuses when status changes
+                });
+                showNotification(`Status "${projectToUpdate.projectName}" diubah ke "${newStatus}"`);
+                window.location.reload(); // Reload to reflect changes consistently
+            } catch (error) {
+                console.error("Error updating project status on drop:", error);
+                showNotification(`Gagal mengubah status: ${error.message}`);
+            }
         }
         setDraggedProjectId(null);
     };

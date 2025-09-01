@@ -201,11 +201,12 @@ export interface Asset {
 export interface User {
     id: string;
     email: string;
-    password: string;
     fullName: string;
-    companyName?: string;
     role: 'Admin' | 'Member';
-    permissions?: ViewType[];
+    vendorId: string;
+    permissions: ViewType[];
+    // password is intentionally omitted for security
+    // companyName is part of the vendor's profile, not individual user
 }
 
 export interface Lead {

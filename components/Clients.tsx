@@ -567,8 +567,6 @@ interface ClientsProps {
     clientFeedback: ClientFeedback[];
     promoCodes: PromoCode[];
     setPromoCodes: React.Dispatch<React.SetStateAction<PromoCode[]>>;
-    onSignInvoice: (projectId: string, signatureDataUrl: string) => void;
-    onSignTransaction: (transactionId: string, signatureDataUrl: string) => void;
     addNotification: (notification: Omit<Notification, 'id' | 'timestamp' | 'isRead'>) => void;
 }
 
@@ -597,7 +595,7 @@ const NewClientsChart: React.FC<{ data: { name: string; count: number }[] }> = (
     );
 };
 
-const Clients: React.FC<ClientsProps> = ({ clients, setClients, projects, setProjects, packages, addOns, transactions, setTransactions, userProfile, showNotification, initialAction, setInitialAction, cards, setCards, pockets, setPockets, contracts, handleNavigation, clientFeedback, promoCodes, setPromoCodes, onSignInvoice, onSignTransaction, addNotification }) => {
+const Clients: React.FC<ClientsProps> = ({ clients, setClients, projects, setProjects, packages, addOns, transactions, setTransactions, userProfile, showNotification, initialAction, setInitialAction, cards, setCards, pockets, setPockets, contracts, handleNavigation, clientFeedback, promoCodes, setPromoCodes, addNotification }) => {
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [modalMode, setModalMode] = useState<'add' | 'edit'>('add');
     const [selectedClient, setSelectedClient] = useState<Client | null>(null);
@@ -1075,13 +1073,26 @@ const Clients: React.FC<ClientsProps> = ({ clients, setClients, projects, setPro
         downloadCSV(headers, data, `data-klien-${new Date().toISOString().split('T')[0]}.csv`);
     };
     
-    const handleSaveSignature = (signatureDataUrl: string) => {
-        if (documentToView?.type === 'invoice' && documentToView.project) {
-            onSignInvoice(documentToView.project.id, signatureDataUrl);
-        } else if (documentToView?.type === 'receipt' && documentToView.transaction) {
-            onSignTransaction(documentToView.transaction.id, signatureDataUrl);
+    const handleSaveSignature = async (signatureDataUrl: string) => {
+        if (!documentToView) return;
+
+        try {
+            if (documentToView.type === 'invoice' && documentToView.project) {
+                await projectsService.update(documentToView.project.id, { invoice_signature: signatureDataUrl });
+                showNotification('Tanda tangan invoice berhasil disimpan.');
+            } else if (documentToView.type === 'receipt' && documentToView.transaction) {
+                await transactionsService.update(documentToView.transaction.id, { vendor_signature: signatureDataUrl });
+                showNotification('Tanda tangan kwitansi berhasil disimpan.');
+            }
+
+            setIsSignatureModalOpen(false);
+            setDocumentToView(null);
+            window.location.reload();
+
+        } catch (error) {
+            console.error("Error saving signature:", error);
+            showNotification(`Gagal menyimpan tanda tangan: ${error.message}`);
         }
-        setIsSignatureModalOpen(false);
     };
 
     const renderDocumentBody = () => {

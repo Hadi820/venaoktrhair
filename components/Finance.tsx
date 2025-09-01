@@ -551,40 +551,183 @@ const Finance: React.FC<FinanceProps> = ({ transactions, setTransactions, pocket
 
         try {
             if (type === 'transaction') {
-                const newTx = { ...form, amount: Number(form.amount) };
+                const txData = { ...form, amount: Number(form.amount) };
+
                 if (mode === 'add') {
-                    // Complex logic for balance updates
-                } else { // Edit mode
-                     await transactionsService.update(data.id, newTx);
+                    const { sourceId, ...newTxData } = txData;
+                    const [sourceType, id] = sourceId.split('-');
+
+                    if (sourceType === 'card') {
+                        newTxData.cardId = id;
+                    } else if (sourceType === 'pocket') {
+                        newTxData.pocketId = id;
+                    }
+
+                    const newTx = await transactionsService.create(newTxData);
+
+                    // Update balances
+                    if (newTx.type === TransactionType.INCOME) {
+                        const cardToUpdate = cards.find(c => c.id === newTx.cardId);
+                        if(cardToUpdate) await cardsService.update(cardToUpdate.id, { balance: cardToUpdate.balance + newTx.amount });
+                    } else { // Expense
+                        if (sourceType === 'card') {
+                            const cardToUpdate = cards.find(c => c.id === id);
+                            if(cardToUpdate) await cardsService.update(cardToUpdate.id, { balance: cardToUpdate.balance - newTx.amount });
+                        } else if (sourceType === 'pocket') {
+                            const pocketToUpdate = pockets.find(p => p.id === id);
+                            if(pocketToUpdate) await financialPocketsService.update(pocketToUpdate.id, { amount: pocketToUpdate.amount - newTx.amount });
+                        }
+                    }
+                } else { // Edit mode - NOTE: Editing transactions with balance changes is complex and risky.
+                         // A full implementation would require reverting the old transaction and applying the new one.
+                         // For now, we only allow editing descriptive fields, not amount/type which affect balance.
+                    const { amount, type, ...updateData } = txData;
+                    await transactionsService.update(data.id, updateData);
                 }
             }
             if (type === 'card') {
                 if (mode === 'add') {
                     const initialBalance = Number(form.initialBalance) || 0;
-                    let newCardData: Omit<Card, 'id' | 'balance'>;
+                    let newCardData: Omit<Card, 'id'>;
                     if (form.cardType === CardType.TUNAI) {
-                        // ...
+                        newCardData = {
+                            cardHolderName: form.cardHolderName || 'Kas Tunai',
+                            bankName: 'Tunai',
+                            cardType: CardType.TUNAI,
+                            lastFourDigits: 'CASH',
+                            expiryDate: '',
+                            colorGradient: 'from-slate-100 to-gray-200',
+                            balance: initialBalance,
+                        };
                     } else {
-                        // ...
+                        newCardData = {
+                            cardHolderName: form.cardHolderName,
+                            bankName: form.bankName,
+                            cardType: form.cardType,
+                            lastFourDigits: form.lastFourDigits,
+                            expiryDate: form.expiryDate,
+                            colorGradient: form.colorGradient || 'from-gray-700 to-gray-900',
+                            balance: form.cardType === CardType.KREDIT ? -initialBalance : initialBalance,
+                        };
                     }
-                    const createdCard = await cardsService.create({ ...newCardData, balance: initialBalance });
+                    const createdCard = await cardsService.create(newCardData);
                     if (initialBalance > 0) {
-                        // ... create initial transaction
+                        await transactionsService.create({
+                            date: new Date().toISOString().split('T')[0],
+                            description: `Saldo awal untuk ${createdCard.bankName}`,
+                            amount: initialBalance,
+                            type: TransactionType.INCOME,
+                            category: 'Saldo Awal',
+                            method: 'Sistem',
+                            cardId: createdCard.id,
+                        });
                     }
                 } else { // Edit mode
-                    // ...
+                    const { adjustmentAmount, adjustmentReason, balance, ...cardUpdateData } = form;
+                    await cardsService.update(data.id, cardUpdateData);
+
+                    if (Number(adjustmentAmount) && adjustmentReason) {
+                        const amount = Number(adjustmentAmount);
+                        const currentCard = cards.find(c => c.id === data.id);
+                        if(currentCard) {
+                            await cardsService.update(data.id, { balance: currentCard.balance + amount });
+                            await transactionsService.create({
+                                date: new Date().toISOString().split('T')[0],
+                                description: `Penyesuaian Saldo: ${adjustmentReason}`,
+                                amount: Math.abs(amount),
+                                type: amount > 0 ? TransactionType.INCOME : TransactionType.EXPENSE,
+                                category: 'Penyesuaian Saldo',
+                                method: 'Sistem',
+                                cardId: data.id,
+                            });
+                        }
+                    }
                 }
             }
             if (type === 'pocket') {
-                if (mode === 'add') await financialPocketsService.create({ ...form, amount: 0 });
-                else await financialPocketsService.update(data.id, form);
+                const pocketData = { ...form, goalAmount: Number(form.goalAmount) || null };
+                if (mode === 'add') await financialPocketsService.create({ ...pocketData, amount: 0 });
+                else await financialPocketsService.update(data.id, pocketData);
             }
-            if (type === 'transfer' || type === 'topup-cash') {
-                // ... complex logic with multiple updates
+            if (type === 'transfer') {
+                const amount = Number(form.amount);
+                const fromCard = cards.find(c => c.id === form.fromCardId);
+                const toPocket = pockets.find(p => p.id === modalState.data.id);
+
+                if(!fromCard || !toPocket || amount <= 0) {
+                    throw new Error("Data transfer tidak valid.");
+                }
+
+                if (form.type === 'deposit') {
+                    // 1. Decrease card balance
+                    await cardsService.update(fromCard.id, { balance: fromCard.balance - amount });
+                    // 2. Increase pocket amount
+                    await financialPocketsService.update(toPocket.id, { amount: toPocket.amount + amount });
+                    // 3. Create transaction log
+                    await transactionsService.create({
+                        date: new Date().toISOString().split('T')[0],
+                        description: `Setor ke kantong "${toPocket.name}" dari ${fromCard.bankName}`,
+                        amount: amount,
+                        type: TransactionType.EXPENSE, // Expense from the main card
+                        category: 'Transfer Internal',
+                        method: 'Transfer',
+                        cardId: fromCard.id,
+                        pocketId: toPocket.id,
+                    });
+                } else { // Withdraw
+                    // 1. Decrease pocket amount
+                    await financialPocketsService.update(toPocket.id, { amount: toPocket.amount - amount });
+                    // 2. Increase card balance
+                    await cardsService.update(fromCard.id, { balance: fromCard.balance + amount });
+                    // 3. Create transaction log
+                     await transactionsService.create({
+                        date: new Date().toISOString().split('T')[0],
+                        description: `Tarik dari kantong "${toPocket.name}" ke ${fromCard.bankName}`,
+                        amount: amount,
+                        type: TransactionType.INCOME, // Income to the main card
+                        category: 'Transfer Internal',
+                        method: 'Transfer',
+                        cardId: fromCard.id,
+                        pocketId: toPocket.id,
+                    });
+                }
             }
+            if (type === 'topup-cash') {
+                const amount = Number(form.amount);
+                const fromCard = cards.find(c => c.id === form.fromCardId);
+                const cashAccount = cards.find(c => c.cardType === CardType.TUNAI);
+
+                if (!fromCard || !cashAccount || amount <= 0) {
+                    throw new Error("Data top-up tidak valid.");
+                }
+                // 1. Decrease source card balance
+                await cardsService.update(fromCard.id, { balance: fromCard.balance - amount });
+                // 2. Increase cash balance
+                await cardsService.update(cashAccount.id, { balance: cashAccount.balance + amount });
+                // 3. Create two transactions for clear tracking
+                await transactionsService.create({
+                    date: new Date().toISOString().split('T')[0],
+                    description: `Tarik tunai dari ${fromCard.bankName}`,
+                    amount: amount,
+                    type: TransactionType.EXPENSE,
+                    category: 'Transfer Internal',
+                    method: 'Tarik Tunai',
+                    cardId: fromCard.id,
+                });
+                 await transactionsService.create({
+                    date: new Date().toISOString().split('T')[0],
+                    description: `Setor tunai dari ${fromCard.bankName}`,
+                    amount: amount,
+                    type: TransactionType.INCOME,
+                    category: 'Transfer Internal',
+                    method: 'Setor Tunai',
+                    cardId: cashAccount.id,
+                });
+            }
+
             showNotification(`${type} berhasil disimpan.`);
             handleCloseModal();
-            window.location.reload();
+            window.location.reload(); // Easiest way to refetch all data for now
         } catch (error) {
             showNotification(`Error: ${error.message}`);
         } finally {
@@ -593,14 +736,47 @@ const Finance: React.FC<FinanceProps> = ({ transactions, setTransactions, pocket
     };
 
     const handleDelete = async (type: 'transaction' | 'pocket' | 'card', id: string) => {
-        // ... (check if used)
-        if (!window.confirm("Yakin ingin menghapus item ini?")) return;
+        if (!window.confirm("Yakin ingin menghapus item ini? Aksi ini tidak bisa dibatalkan.")) return;
 
         setIsLoading(true);
         try {
-            if (type === 'transaction') await transactionsService.delete(id);
-            if (type === 'pocket') await financialPocketsService.delete(id);
-            if (type === 'card') await cardsService.delete(id);
+            if (type === 'transaction') {
+                const txToDelete = transactions.find(t => t.id === id);
+                if (!txToDelete) throw new Error("Transaksi tidak ditemukan.");
+
+                // Revert balance changes, with caution
+                if (txToDelete.type === TransactionType.INCOME) {
+                    const cardToUpdate = cards.find(c => c.id === txToDelete.cardId);
+                    if(cardToUpdate) await cardsService.update(cardToUpdate.id, { balance: cardToUpdate.balance - txToDelete.amount });
+                } else { // Expense
+                    if (txToDelete.cardId) {
+                        const cardToUpdate = cards.find(c => c.id === txToDelete.cardId);
+                        if(cardToUpdate) await cardsService.update(cardToUpdate.id, { balance: cardToUpdate.balance + txToDelete.amount });
+                    } else if (txToDelete.pocketId) {
+                        const pocketToUpdate = pockets.find(p => p.id === txToDelete.pocketId);
+                        if(pocketToUpdate) await financialPocketsService.update(pocketToUpdate.id, { amount: pocketToUpdate.amount + txToDelete.amount });
+                    }
+                }
+                await transactionsService.delete(id);
+            }
+            if (type === 'pocket') {
+                 const pocketToDelete = pockets.find(p => p.id === id);
+                 if (pocketToDelete && pocketToDelete.amount > 0) {
+                     throw new Error("Kantong tidak kosong. Tarik dana terlebih dahulu sebelum menghapus.");
+                 }
+                await financialPocketsService.delete(id);
+            }
+            if (type === 'card') {
+                const cardToDelete = cards.find(c => c.id === id);
+                if (cardToDelete && cardToDelete.balance !== 0) {
+                    throw new Error("Saldo kartu tidak nol. Lakukan penyesuaian saldo menjadi nol sebelum menghapus.");
+                }
+                const hasTransactions = transactions.some(t => t.cardId === id);
+                if (hasTransactions) {
+                    throw new Error("Kartu ini memiliki riwayat transaksi dan tidak dapat dihapus.");
+                }
+                await cardsService.delete(id);
+            }
             showNotification(`${type} berhasil dihapus.`);
             window.location.reload();
         } catch (error) {
